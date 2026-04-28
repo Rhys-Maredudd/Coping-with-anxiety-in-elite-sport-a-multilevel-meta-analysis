@@ -19,7 +19,9 @@ library(performance)
 library(effectsize)
 library(correlation)
 library(modelbased)
-Data_Extraction <- Data_Extraction <- read_excel("C:/Users/rdavies7/Documents/Thesis/Thesis Chapters/Meta analysis study/Updated_analysis/Data Extraction_tidied.xlsx") %>% mutate(id = row_number()) %>% 
+library(openxlsx)
+
+Data_Extraction <-  read.xlsx("https://raw.github.com/Rhys-Maredudd/Coping-with-anxiety-in-elite-sport-a-multilevel-meta-analysis/main/Data.xlsx") %>% mutate(id = row_number()) %>% 
   filter(
     id != 86, id != 91, # from self extracted - authors did not use this in their paper, and calculation methods for total score not clear/would not reflect their paper
     Study != "The mediating role of coping strategies between achievement goals and competitive anxiety in elite sport: A path analytic study.", # not peer reviewed
