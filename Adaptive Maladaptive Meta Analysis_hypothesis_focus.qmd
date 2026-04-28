@@ -1,0 +1,2409 @@
+---
+title: "Meta Analysis"
+author: "Rhys Maredudd Davies"
+format: docx
+editor: visual
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = FALSE)
+pacman::p_load(tidyverse, meta, metafor, gt,dmetatools, esc, gtsummary, broom,  naniar)
+library(readxl)
+library(dmetar)
+library(clubSandwich)
+library(DescTools)
+#library(easystats) #not working for some reason...
+library(insight)
+library(parameters)
+library(performance)
+library(effectsize)
+library(correlation)
+library(modelbased)
+Data_Extraction <- Data_Extraction <- read_excel("C:/Users/rdavies7/Documents/Thesis/Thesis Chapters/Meta analysis study/Updated_analysis/Data Extraction_tidied.xlsx") %>% mutate(id = row_number()) %>% 
+  filter(
+    id != 86, id != 91, # from self extracted - authors did not use this in their paper, and calculation methods for total score not clear/would not reflect their paper
+    Study != "The mediating role of coping strategies between achievement goals and competitive anxiety in elite sport: A path analytic study.", # not peer reviewed
+  #  Study != "Does weight change relate to psychological variables and eating behaviours in combat sports?", # non validated coping measure used
+  #  Study!= "Pre-competition anxiety and in-competition coping in experienced male swimmers.", # non validated coping measure used
+  #  Study != "How Do Elite Female Athletes Cope with Symptoms of Their Premenstrual Period? A Study on Rugby Union and Football Players' Perceived Physical Ability and Well-Being.", # Measure modified, so not validated
+    Study != "Correlations between psychomotor abilities and selected personality variables in rowers", # removing study as I am very concerned about its quality.
+    Study != "Athletes’ basic psychological needs and emotions: the role of cognitive reappraisal", # athlete data not provided/not identifiable
+    Study != "Emotional profile of athletes before competition: contributions for perceived stress, cognitive appraisal and coping strategies.", # Study not included as it includes same sample/measures as other Noguerira et al (2025) paper.
+    Study != "Coping Strategies Before Competition: The Role of Stress, Cognitive Appraisal, and Emotions." # Turns out the coping measure used in this paper has not been validated in previous research (Nogueria and Gomez (2025) paper used same sample as used in this study)
+  )
+# Freedom from worry in da Silva paper reverse scored (not done in original paper, but needed to be done as measure items require it)
+```
+
+## Data preperation
+
+I may need to seperate data to focus on the correlation groups I am interested in.
+
+Potential template paper : [Self-Compassion and Coping: a Meta-Analysis; Ewert et al., 2021](https://link.springer.com/content/pdf/10.1007/s12671-020-01563-8.pdf)
+
+```{r data_tidy}
+
+composites <- c("ACSI total score", "Avoidance Focused Coping","Emotion Focused Coping",
+                "Problem Focused Coping", "Total Difficulties in Emotion Regulation", 
+                "Avoidance Oriented Coping", "Task Oriented Coping", 
+                "Dysfunctional coping","Disengagment Oriented Coping","Distraction Oriented Coping" )
+
+Data_Extraction_tidied <- 
+  Data_Extraction  %>%
+  mutate(
+    coping_Measure = `emotion regulation_or_coping measure used`,
+    Author_Year = str_c(Authors, `Year of Publication`, sep = " "),
+    sport_level = as.factor(case_when(
+      `level of sport` == "Olympic/Paralympic" ~ "Olympic/Paralympic",
+      `level of sport` == "paralympic"         ~ "Olympic/Paralympic",
+      `level of sport` == "Paralympic"         ~ "Olympic/Paralympic",
+      `level of sport` == "NCAAD II" ~ "NCAAD",
+      `level of sport` == "NCAA Divison III"  ~ "NCAAD",
+      `level of sport` == "NCAAD1; NCAAD2; NCAAD3"  ~ "NCAAD",
+      `level of sport` == "international"  ~ "International/Professional",
+      `level of sport` == "International"  ~ "International/Professional",
+      `level of sport` == "international/professional"  ~ "International/Professional",
+      `level of sport` == "Federation"  ~ "Federation/State",
+      `level of sport` == "state"  ~ "Federation/State",
+      `level of sport` == "mix"  ~ "Mix",
+    )),
+    `type of sport` = as.factor(
+      case_when(
+        `type of sport` == "mix" ~ "mix",
+        `type of sport` == "team" ~ "team",
+        `type of sport` == "individual" ~ "ind",
+        `type of sport` == "NA" ~ "NA"
+      )
+    ),
+    Study_sample_type = as.factor(str_c(sport_level, `type of sport`, sep = "-"))
+    ) %>%
+  group_by(Study) %>%
+  mutate(Study_id = cur_group_id(),
+         effect_id = row_number()) %>%
+  ungroup %>%
+  mutate(
+    N_Gender_Female = as.numeric(N_Gender_Female),
+    N_Gender_Male = as.numeric(N_Gender_Male),
+    percentage_female = N_Gender_Female/(N_Gender_Male + N_Gender_Female),
+    Study = as.factor(Study),
+    r = as.numeric(r),
+    z = .5*log((1 + r)/(1-r)),
+    SE_z = 1/sqrt((`Sample Size of Correlation Analysis`- 3)),
+    variance_z = 1/(`Sample Size of Correlation Analysis`- 3),
+    `Var 1` = as.factor(`Var 1`),
+    `Var 2` = as.factor(`Var 2`),
+    Var2_taxonomised_review1 = as.factor(str_to_title(Var2_taxonomised_review1)),
+    Var2_Affect_Regulation_reviewer_1 = as.factor(str_to_title(Var2_Affect_Regulation_reviewer_1)),
+    Var2_framing = as.factor(Var2_framing),
+    `Year of Publication` = as.factor(`Year of Publication`),
+    Var_1_simplified = as.factor(case_when(
+      `Var 1` == "Cognitive Anxiety" ~ "Anxiety",
+      `Var 1` == "Somatic Anxiety" ~ "Anxiety",
+      `Var 1` == "Sport Anxiety" ~ "Anxiety",
+      `Var 1` == "Worry" ~ "Anxiety",
+      `Var 1` == "Anxiety" ~ "Anxiety",
+      `Var 1` == "Cognitive Anxiety Intensity" ~ "Anxiety",
+      `Var 1` == "SAS total" ~ "Anxiety",
+      `Var 1` == "Somatic Anxiety Intensity" ~ "Anxiety",
+      `Var 1` == "Wellbeing" ~ "Wellbeing",
+      `Var 1` == "Psychological Wellbeing" ~ "Wellbeing",
+    )),
+      `Var 1` = as.factor(case_when(
+      `Var 1` == "Cognitive Anxiety" ~ "Cognitive Anxiety",
+      `Var 1` == "Somatic Anxiety" ~ "Somatic Anxiety",
+      `Var 1` == "Sport Anxiety" ~ "Sport Anxiety",
+      `Var 1` == "Worry" ~ "Worry",
+      `Var 1` == "Anxiety" ~ "Anxiety",
+      `Var 1` == "Cognitive Anxiety Intensity" ~ "Cognitive Anxiety Intensity",
+      `Var 1` == "SAS total" ~ "Sport Anxiety",
+      `Var 1` == "Somatic Anxiety Intensity" ~ "Somatic Anxiety Intensity",
+       `Var 1` == "Wellbeing" ~ "Wellbeing"
+      )),
+      Var_1_summarised = as.factor(case_when(
+      `Var 1` == "Cognitive Anxiety" ~ "Cognitive Anxiety",
+      `Var 1` == "Somatic Anxiety" ~ "Somatic Anxiety",
+      `Var 1` == "Sport Anxiety" ~ "Sport Anxiety",
+      `Var 1` == "Worry" ~ "Cognitive Anxiety",
+      `Var 1` == "Anxiety" ~ "Anxiety",
+      `Var 1` == "Cognitive Anxiety Intensity" ~ "Cognitive Anxiety",
+      `Var 1` == "SAS total" ~ "Sport Anxiety",
+      `Var 1` == "Somatic Anxiety Intensity" ~ "Somatic Anxiety",
+       `Var 1` == "Wellbeing" ~ "Wellbeing"
+      )),
+    Var_2_Domain = as.factor(Var_2_Domain),
+    Var_2_Factor = as.factor(Var_2_Factor),
+    Var_2_Strategy = as.factor(Var_2_Strategy),
+    Coping_classification = as.factor(case_when(
+      # Using Lazarus and Folkman classification here 
+      ## Exceptions for total score - treated as total
+      ## totals
+     `Var 2` == "ACSI total score" ~ "Combined coping", 
+     `Var 2` == "Dysfunctional coping" ~ "Combined coping", # reverse?
+     # Avoidance Focused
+     `Var 2` == "Avoidance Focused Coping"     ~ "Avoidance Focused Coping",
+     `Var 2` == "Avoidance Oriented Coping"    ~ "Avoidance Focused Coping",
+     `Var 2` == "Evasive Behaviour"            ~ "Avoidance Focused Coping",
+     `Var 2` == "Helplessness"                 ~ "Avoidance Focused Coping",
+     `Var 2` == "Denial"                       ~ "Avoidance Focused Coping",
+     `Var 2` == "Avoidant Coping"              ~ "Avoidance Focused Coping",
+     `Var 2` == "Behavioural Disagreement"    ~ "Avoidance Focused Coping", # moved to problem focus - back to avoidance focus after review
+     `Var 2` == "Self Distraction"             ~ "Avoidance Focused Coping",
+     `Var 2` == "Substance Use"                ~ "Avoidance Focused Coping",
+     `Var 2` == "Avoiding Harm"                ~ "Avoidance Focused Coping",
+     `Var 2` == "Behavioural Disengagement"    ~ "Avoidance Focused Coping",
+     `Var 2` == "Mental Disengagement"         ~ "Avoidance Focused Coping",
+     `Var 2` == "Disengagment Oriented Coping" ~ "Avoidance Focused Coping",
+     `Var 2` == "Distraction Oriented Coping"  ~ "Avoidance Focused Coping",
+   
+     # Emotion Focused
+     `Var 2` == "Emotion Focused Coping"                             ~ "Emotion Focused Coping",
+     `Var 2` == "Lack of Emotional Awareness"                        ~ "Emotion Focused Coping", # reverse?
+     `Var 2` == "Lack of Emotional Clarity"                          ~ "Emotion Focused Coping", # reverse?
+     `Var 2` == "Limited Access to Emotion Regulation Strategies"    ~ "Emotion Focused Coping", # reverse?
+     `Var 2` == "Non Acceptance of Emotional Responses"              ~ "Emotion Focused Coping", # reverse?
+     `Var 2` == "Total Difficulties in Emotion Regulation"           ~ "Emotion Focused Coping", # reverse?
+     `Var 2` == "Confidence"                                         ~ "Emotion Focused Coping",
+     `Var 2` == "Coping with Adversity"                              ~ "Emotion Focused Coping",
+     `Var 2` == "Freedom from Worry"                                 ~ "Emotion Focused Coping",
+     `Var 2` == "Acceptance"                                         ~ "Emotion Focused Coping",
+     `Var 2` == "Humour"                                             ~ "Emotion Focused Coping",
+     `Var 2` == "Looking for Support"                                ~ "Emotion Focused Coping",
+     `Var 2` == "Return to religion"                                 ~ "Emotion Focused Coping",
+     `Var 2` == "Emotional Support"                                  ~ "Emotion Focused Coping",
+     `Var 2` == "Religion"                                           ~ "Emotion Focused Coping",
+     `Var 2` == "Self Blame"                                         ~ "Emotion Focused Coping", # reverse?
+     `Var 2` == "Venting"                                            ~ "Emotion Focused Coping", # reverse?
+     `Var 2` == "Awareness and Acceptance"                           ~ "Emotion Focused Coping",
+     `Var 2` == "Communicating"                                      ~ "Emotion Focused Coping",
+     `Var 2` == "Self-care"                                          ~ "Emotion Focused Coping",
+     `Var 2` == "Self-talk"                                          ~ "Emotion Focused Coping",
+     `Var 2` == "Emotional Control"                                  ~ "Emotion Focused Coping",
+     `Var 2` == "Negative Thoughts"                                  ~ "Emotion Focused Coping", # reverse?
+     `Var 2` == "Relaxation"                                         ~ "Emotion Focused Coping",   
+   
+   
+     ## Problem Focused
+     `Var 2` == "Problem Focused Coping"                           ~ "Problem Focused Coping",
+     `Var 2` == "Difficulties Engaging in Goal-Directed Behaviour" ~ "Problem Focused Coping", # reverse?
+     `Var 2` == "Impulse Control Difficulties"                     ~ "Problem Focused Coping", # reverse?
+     `Var 2` == "Coachabilitiy"                                    ~ "Problem Focused Coping", 
+     `Var 2` == "Concentration"                                    ~ "Problem Focused Coping", 
+     `Var 2` == "Goal Setting"                                     ~ "Problem Focused Coping", 
+     `Var 2` == "Peaking under Pressure"                           ~ "Problem Focused Coping", 
+     `Var 2` == "Task Oriented Coping"                             ~ "Problem Focused Coping",  
+     `Var 2` == "Active Coping"                                    ~ "Problem Focused Coping",
+     `Var 2` == "Active Confrontation"                             ~ "Problem Focused Coping",
+     `Var 2` == "Planning"                                         ~ "Problem Focused Coping",
+     `Var 2` == "Positive Reframing"                               ~ "Problem Focused Coping",
+     `Var 2` == "Using Instrumental Support"                       ~ "Problem Focused Coping",
+     `Var 2` == "Adjusting Energy"                                 ~ "Problem Focused Coping",
+   #  `Var 2` == "Behavioural Disagreement"                         ~ "Problem Focused Coping", # moved from avoidance
+     `Var 2` == "Effort"                                           ~ "Problem Focused Coping",
+     `Var 2` == "Attentional Control"                              ~ "Problem Focused Coping",
+     `Var 2` == "Imagery"                                          ~ "Problem Focused Coping"
+     )),
+      SE_z = 1/sqrt((`Sample Size of Correlation Analysis`- 3)), # based on formulae from Handso on Guide - using Olkin and Finn (1995) method
+      Study_Quality = as.factor(case_when(
+        Study == "A longitudinal examination of changes in mental health among elite Canadian athletes." ~ "High",
+        Study == "A preliminary exploration of the application of self-compassion within the context of sport injury." ~ "High",
+        Study == "A randomized controlled study of mindful sport performance enhancement and psychological skills training with collegiate track and field athletes" ~ "Low",
+        Study == "Athletes’ basic psychological needs and emotions: the role of cognitive reappraisal" ~ "NA",
+        Study == "Coping skills: role of trait sport confidence and trait anxiety." ~ "Low",
+        Study == "Coping with the COVID-19 pandemic by Paralympic athletes preparing for elite sport events: A longitudinal study." ~ "High",
+        Study == "Correlations between psychomotor abilities and selected personality variables in rowers" ~ "Very Low",
+        Study == "Does weight change relate to psychological variables and eating behaviours in combat sports?" ~"Low",
+        Study == "Examining associations of coping strategies with stress, alcohol, and substance use among college athletes: Implications for improving athlete coping." ~ "Medium",
+        Study == "How Do Elite Female Athletes Cope with Symptoms of Their Premenstrual Period? A Study on Rugby Union and Football Players' Perceived Physical Ability and Well-Being." ~ "Medium",
+        Study == "Mindfulness training for a college team: Feasibility, acceptability, and effectiveness from within an athletic department" ~ "Low",
+        Study == 	"Pandemic-specific coping, anxiety, and depression across multiple waves of COVID-19 in elite athletes with disabilities" ~ "High",
+        Study == "Pre-competition anxiety and in-competition coping in experienced male swimmers." ~ "Low",
+        Study == "Psychological Characteristics and Their Relation to Performance in Professional Golfers" ~ "Low",
+        Study == "Quality of coach-athlete relationship and coping as associated factors of stress, anxiety, burnout, and depression symptoms of soccer players in transition to professional: a prospective study" ~ "Low",
+        Study == "Stress, Sport Anxiety, Neuroticism, and Coping in Student-Athletes: Implications for Patient Mental Health." ~ "Low",
+        Study == "The mediating role of coping strategies between achievement goals and competitive anxiety in elite sport: A path analytic study." ~ "Medium"
+      )),
+   Risk_of_Bias = as.factor(case_when(
+     Study_Quality == "High" ~ "Low Risk",
+     Study_Quality == "Medium" ~ "Medium Risk",
+     Study_Quality == "Low" ~ "High Risk",
+   )),
+   Var_2_type = as.factor(if_else(
+     `Var 2` %in% composites,
+     "composite score",
+     "sub-scale"
+   )),
+   coping_Measure_tidy = as.factor(case_when(
+     coping_Measure == "Athletic Coping Skills Inventory" ~ "Athletic Coping Skills Inventory",
+     coping_Measure == "Brazilian version of the Athletic Coping Skills Inventory" ~ "Athletic Coping Skills Inventory",
+     coping_Measure == "Breif Coping Inventory" ~ "Brief COPE",
+     coping_Measure == "Brief COPE" ~ "Brief COPE",
+     coping_Measure == "COPE inventory-reduced (COPE-R)" ~ "Brief COPE", 
+     coping_Measure == "COPE, MCOPE, Test of performance strategies (TOPS)" ~ "COPE, MCOPE, Test of performance strategies (TOPS)", # check - maybe mix, maybe separate scales?
+     coping_Measure == "Inventory for Stressful Situations (CISS)" ~ "Inventory for Stressful Situations (CISS)",
+     coping_Measure == "CopingInventory for Stressful Situations (CISS)"~ "Inventory for Stressful Situations (CISS)",
+     coping_Measure == "Test of Performance Strategies" ~ "Test of Performance Strategies",
+     coping_Measure == "Difficulties in Emotion Regulation Scale-Short Form" ~ "Difficulties in Emotion Regulation Scale-Short Form",
+     coping_Measure == "The State Difficulties in Emotion Regulation Scale (Hungarian)" ~ "Difficulties in Emotion Regulation Scale-Short Form",
+     coping_Measure == "Reduced Coping Inventory" ~ "Brief COPE"
+   )),
+   
+    Adp_mal_classification = as.factor(case_when(
+  # Manual recording for Inventory of Stressful situation measures adaptive/maladaptive labelling, due to wording of scale items based on item wordings found in Psychometric Properties of the Coping Inventory for Stressful Situations in Korean Adults - this code did not work. Need to 
+     coping_Measure_tidy == "Inventory for Stressful Situations (CISS)" & `Var 2` ==
+"Task Oriented Coping" ~ "Adaptive",
+     coping_Measure_tidy == "Inventory for Stressful Situations (CISS)" & `Var 2` ==
+"Emotion Focused Coping" ~ "Maladaptive",
+     coping_Measure_tidy == "Inventory for Stressful Situations (CISS)" & `Var 2` ==
+"Avoidance Oriented Coping" ~ "Maladaptive",
+      
+      
+      ## Exceptions for total score - treated as total
+      ## totals
+     `Var 2` == "ACSI total score" ~ "Adaptive", 
+     
+     # Avoidance Focused
+     `Var 2` == "Avoidance Focused Coping"     ~ "Maladaptive",
+     `Var 2` == "Avoidance Oriented Coping"    ~ "Maladaptive",
+     `Var 2` == "Evasive Behaviour"            ~ "Maladaptive",
+     `Var 2` == "Helplessness"                 ~ "Maladaptive",
+     `Var 2` == "Denial"                       ~ "Maladaptive",
+     `Var 2` == "Avoidant Coping"              ~ "Maladaptive",
+   #`Var 2` == "Behavioural Disagreement"    ~ "Avoidance Focused Coping", # moved to problem focus
+     `Var 2` == "Self Distraction"             ~ "Maladaptive",
+     `Var 2` == "Substance Use"                ~ "Maladaptive",
+     `Var 2` == "Avoiding Harm"                ~ "Maladaptive",
+     `Var 2` == "Behavioural Disengagement"    ~ "Maladaptive",
+     `Var 2` == "Mental Disengagement"         ~ "Maladaptive",
+     `Var 2` == "Disengagment Oriented Coping" ~ "Maladaptive",
+     `Var 2` == "Distraction Oriented Coping"  ~ "Maladaptive",
+   
+     # Emotion Focused
+     `Var 2` == "Emotion Focused Coping"                             ~ "Adaptive",
+     `Var 2` == "Lack of Emotional Awareness"                        ~ "Maladaptive", # reverse?
+     `Var 2` == "Lack of Emotional Clarity"                          ~ "Maladaptive", # reverse?
+     `Var 2` == "Limited Access to Emotion Regulation Strategies"    ~ "Maladaptive", # reverse?
+     `Var 2` == "Non Acceptance of Emotional Responses"              ~ "Maladaptive", # reverse?
+     `Var 2` == "Total Difficulties in Emotion Regulation"           ~ "Maladaptive", # reverse?
+     `Var 2` == "Confidence"                                         ~ "Adaptive",
+     `Var 2` == "Coping with Adversity"                              ~ "Adaptive",
+     `Var 2` == "Freedom from Worry"                                 ~ "Adaptive",
+     `Var 2` == "Acceptance"                                         ~ "Adaptive",
+     `Var 2` == "Humour"                                             ~ "Adaptive",
+     `Var 2` == "Looking for Support"                                ~ "Adaptive",
+     `Var 2` == "Return to religion"                                 ~ "Adaptive",
+     `Var 2` == "Emotional Support"                                  ~ "Adaptive", 
+     `Var 2` == "Religion"                                           ~ "Adaptive", # neutral?
+     `Var 2` == "Self Blame"                                         ~ "Maladaptive", 
+     `Var 2` == "Venting"                                            ~ "Maladaptive", # reverse?
+     `Var 2` == "Awareness and Acceptance"                           ~ "Adaptive",
+     `Var 2` == "Communicating"                                      ~ "Adaptive",
+     `Var 2` == "Self-care"                                          ~ "Adaptive",
+     `Var 2` == "Self-talk"                                          ~ "Adaptive",
+     `Var 2` == "Emotional Control"                                  ~ "Adaptive",
+     `Var 2` == "Negative Thoughts"                                  ~ "Maladaptive", # reverse?
+     `Var 2` == "Relaxation"                                         ~ "Adaptive",   
+   
+   
+     ## Problem Focused
+     `Var 2` == "Problem Focused Coping"                           ~ "Adaptive",
+     `Var 2` == "Difficulties Engaging in Goal-Directed Behaviour" ~ "Maladaptive", # reverse?
+     `Var 2` == "Impulse Control Difficulties"                     ~ "Maladaptive", # reverse?
+     `Var 2` == "Coachabilitiy"                                    ~ "Adaptive", 
+     `Var 2` == "Concentration"                                    ~ "Adaptive", 
+     `Var 2` == "Goal Setting"                                     ~ "Adaptive", 
+     `Var 2` == "Peaking under Pressure"                           ~ "Adaptive", 
+     `Var 2` == "Task Oriented Coping"                             ~ "Adaptive",  
+     `Var 2` == "Active Coping"                                    ~ "Adaptive",
+     `Var 2` == "Active Confrontation"                             ~ "Maladaptive", #reverse?
+     `Var 2` == "Planning"                                         ~ "Adaptive",
+     `Var 2` == "Positive Reframing"                               ~ "Adaptive",
+     `Var 2` == "Using Instrumental Support"                       ~ "Adaptive",
+     `Var 2` == "Adjusting Energy"                                 ~ "Adaptive",
+     `Var 2` == "Behavioural Disagreement"                         ~ "Maladaptive", # moved from avoidance
+     `Var 2` == "Effort"                                           ~ "Adaptive", # neutral?
+     `Var 2` == "Attentional Control"                              ~ "Adaptive",
+     `Var 2` == "Imagery"                                          ~ "Adaptive",
+     `Var 2` == "Dysfunctional coping"                             ~ "Maladaptive", # reverse?
+   
+     `Var 2` == "Active Coping"                                    ~ "Adaptive",
+     `Var 2` == "Emotional Support"                                ~ "Adaptive",
+     `Var 2` == "Humour"                                           ~ "Adaptive",
+     `Var 2` == "Denial"                                           ~ "Maladaptive",
+     )), 
+      mod_r = case_when(
+        Adp_mal_classification == "Maladaptive" ~ r*-1,
+        Adp_mal_classification == "Adaptive"    ~ r
+      ),
+      mod_z = .5*log((1 + mod_r)/(1-mod_r)),
+   Country = as.factor(case_when(
+     Study == "A longitudinal examination of changes in mental health among elite Canadian athletes." ~ "Canada",
+     Study == "A preliminary exploration of the application of self-compassion within the context of sport injury." ~ "USA",
+     Study == "A randomized controlled study of mindful sport performance enhancement and psychological skills training with collegiate track and field athletes" ~ "USA",
+     Study == "Athletes’ basic psychological needs and emotions: the role of cognitive reappraisal" ~ "Italy",
+     Study == "Coping skills: role of trait sport confidence and trait anxiety." ~ "New Zealand",
+     Study == "Coping with the COVID-19 pandemic by Paralympic athletes preparing for elite sport events: A longitudinal study." ~ "Poland",
+     Study == "Does weight change relate to psychological variables and eating behaviours in combat sports?" ~ "Portugal",
+     Study == "Examining associations of coping strategies with stress, alcohol, and substance use among college athletes: Implications for improving athlete coping." ~ "USA",
+     Study == "How Do Elite Female Athletes Cope with Symptoms of Their Premenstrual Period? A Study on Rugby Union and Football Players' Perceived Physical Ability and Well-Being." ~ "Italy",
+     Study == "Mindfulness training for a college team: Feasibility, acceptability, and effectiveness from within an athletic department" ~ "USA",
+     Study == "Pandemic-specific coping, anxiety, and depression across multiple waves of COVID-19 in elite athletes with disabilities" ~ "Poland", # this study also not working for weird reason
+     Study == "Pre-competition anxiety and in-competition coping in experienced male swimmers." ~ "Greece",
+     Study == "Psychological Characteristics and Their Relation to Performance in Professional Golfers" ~ "France",
+     Study == "Quality of coach-athlete relationship and coping as associated factors of stress, anxiety, burnout, and depression symptoms of soccer players in transition to professional: a prospective study" ~ "Brazil",
+     Study == "Stress, Sport Anxiety, Neuroticism, and Coping in Student-Athletes: Implications for Patient Mental Health." ~ "USA",
+     
+     Study == "Effects of group mindfulness intervention on high-level distance runners: a quasi-experimental study." ~ "Hungary",
+     Study == "Coping Strategies Before Competition: The Role of Stress, Cognitive Appraisal, and Emotions." ~ "Portugal"
+   )),
+  Region = as.factor(
+    case_when(
+      Country == "Canada"   ~ "North America",
+      Country == "USA"      ~ "North America",
+      Country == "New Zealand" ~ "Oceania",
+      Country == "Portugal" ~ "Europe",
+      Country == "Italy"    ~ "Europe",
+      Country == "Poland"   ~ "Europe",
+      Country == "Greece"   ~ "Europe",
+      Country == "France"   ~ "Europe",
+      Country == "Hungary"   ~ "Europe",
+      Country == "Portugal"   ~ "Europe",
+      Country == "Brazil"   ~ "Latin America"
+    )
+  )
+   ) 
+# For reasons I don't understand, Urbanski et al.,(b) (Pandemic-specific coping...) isnt being picked up by case_when function above. Using manual strategy to imput quality and risk of bias calculation - 
+
+Data_Extraction_tidied$Study_Quality[Data_Extraction_tidied$Authors=="Urbanski et al.,(b)"] <-  "High" 
+Data_Extraction_tidied$Risk_of_Bias[Data_Extraction_tidied$Authors=="Urbanski et al.,(b)"] <-  "Low Risk" 
+Data_Extraction_tidied$Country[Data_Extraction_tidied$Authors=="Urbanski et al.,(b)"] <- "Poland"
+Data_Extraction_tidied$Region[Data_Extraction_tidied$Authors=="Urbanski et al.,(b)"] <- "Europe"
+
+Data_Extraction_tidied$Authors[Data_Extraction_tidied$Authors=="Urbanski et al.,(a)"]<- "Urbanski et al.,"
+Data_Extraction_tidied$Authors[Data_Extraction_tidied$Authors=="Urbanski et al.,(b)"]<- "Urbanski et al.,"
+Data_Extraction_tidied$Author_Year[Data_Extraction_tidied$Author_Year=="Urbanski et al.,(a) 2022"]<- "Urbanski et al., 2022"
+Data_Extraction_tidied$Author_Year[Data_Extraction_tidied$Author_Year=="Urbanski et al.,(b) 2023"]<- "Urbanski et al., 2023"
+Data_Extraction_tidied$`Var 2`[Data_Extraction_tidied$`Var 2` == "Behavioural Disagreement"] <- "Behavioural Disengagement" # typo fix for Knettel et al paper (I misspelled it in manual data extraction)
+```
+
+# 3. Results
+
+## 3.1. Study selection
+
+```{r}
+anxiety_data <- Data_Extraction_tidied %>%
+  filter(Var_1_simplified == "Anxiety") %>% 
+  mutate( `level of sport` = as.factor(`level of sport`),
+          level_of_sport = `level of sport`,
+          Study_id = as.factor(Study_id),
+          effect_id = as.factor(effect_id),
+          n = `Sample Size of Correlation Analysis`,
+         percentage_female_imp = replace_na(percentage_female, 0)# assuming sexism is reason for no gender reporting (sport assuming all participants as male)
+  )
+
+both_Strategies <- anxiety_data %>%
+  group_by(Study) %>%
+  summarise(Adaptive = any(Adp_mal_classification == "Adaptive"),
+            Maladaptive = any(Adp_mal_classification == "Maladaptive")) %>%
+  filter(Adaptive & Maladaptive)
+
+anxiety_data$data_reported <- anxiety_data$`Data Reported`
+# anxiety_data %>%
+#   semi_join(both_Strategies, by = "Study")
+```
+
+`r anxiety_data %>% group_by(Study) %>% summarise() %>% nrow()` studies were included in this review. Of these studies, `r nrow(both_Strategies)` studies assessed both adaptive and maladaptive strategies, `r anxiety_data %>% filter(Adp_mal_classification== "Adaptive") %>% group_by(Study) %>% summarise() %>% nrow()` assessed only adaptive coping strategies and anxiety, `r anxiety_data %>% filter(Adp_mal_classification== "Maladaptive") %>% group_by(Study) %>% summarise() %>% nrow()` studies assessed only maladaptive coping strategies and anxiety. The correlation analyses were available in `r anxiety_data %>% filter(data_reported == "Yes") %>% group_by(Study) %>% summarise() %>% nrow()` studies while the authors provided the effect sizes of `r anxiety_data %>% filter(data_reported == "Extracted manually") %>% group_by(Study) %>% summarise() %>% nrow()` studies for this review. Some studies include separate (sub)samples (e.g., a team sport sample and an individual sport sample etc.) and analysed their data separately. We also included these (sub)samples in analyses separately. In total, this review contains 1 study with 2 (sub)samples; Cresswell & Hodge (2004), which was included in the meta-analysis of the correlation between adaptive coping and anxiety.
+
+#### Coping classification table
+
+```{r}
+anxiety_data %>% filter(Adp_mal_classification =="Adaptive") %>%
+  group_by( Coping_classification, ) %>%
+  select(coping_Measure_tidy, `Var 2`) %>% 
+  mutate(filter_var = paste(coping_Measure_tidy, `Var 2`, sep = "-")) %>%
+ # distinct(filter_var, .keep_all = FALSE) %>%
+  filter(!duplicated(filter_var)) %>%
+  select(-filter_var) %>%
+  rename("Coping Measure" = coping_Measure_tidy,
+         "Strategy" = `Var 2`) %>%
+  # summarise(
+  #   measure = coping_Measure_tidy,
+  #   Subscale = unique(`Var 2`)
+  #   ) %>% 
+  gt() %>% 
+  tab_header(
+    title = "Adaptive Coping Strategies"
+  ) %>% tab_stubhead(label = "Coping Classification") %>%
+tab_options(row_group.as_column = T) 
+
+anxiety_data %>% filter(Adp_mal_classification =="Maladaptive") %>% group_by( Coping_classification, ) %>%
+  select(coping_Measure_tidy, `Var 2`) %>% 
+  mutate(filter_var = paste(coping_Measure_tidy, `Var 2`, sep = "-")) %>%
+ # distinct(filter_var, .keep_all = FALSE) %>%
+  filter(!duplicated(filter_var)) %>%
+  select(-filter_var) %>%
+  rename("Coping Measure" = coping_Measure_tidy,
+         "Strategy" = `Var 2`) %>%
+  # summarise(
+  #   measure = coping_Measure_tidy,
+  #   Subscale = unique(`Var 2`)
+  #   ) %>% 
+  gt(
+  ) %>% 
+  tab_header(
+    title = "Maladaptive Coping Strategies"
+  ) %>% tab_stubhead(label = "Coping Classification") %>%
+tab_options(row_group.as_column = T) 
+
+```
+
+## 3.2 Quantitative summary of study characteristics
+
+```{r echo = FALSE}
+final_sample <- anxiety_data %>% group_by(Study) %>% summarise(n = sum(`Sample Size of Correlation Analysis`)) %>% drop_na() 
+
+summary_table <- anxiety_data  %>% 
+  mutate(`Year of Publication` = as.character(`Year of Publication`),# both char and numeric needed, else converted to rank number (which is odd)
+         `Year of Publication` = as.numeric(`Year of Publication`)
+         )  %>% 
+  select(
+    Study, Authors, Region, `Year of Publication`,
+    N_Gender_Female , `Mean Age`, `level of sport`,
+    `Sample Size of Correlation Analysis`,Risk_of_Bias, r, n
+   # Coping_classification , Adp_mal_classification,
+    ) %>% 
+  group_by(Authors) %>%
+  summarise(
+    `Year of Publication` = max(`Year of Publication`),
+    Region = first(Region),
+     N = round(mean(`Sample Size of Correlation Analysis`),2),
+     Gender_perc_female = round((mean(N_Gender_Female)/N) * 100 , 2),
+     Mean_Age = round(mean(`Mean Age`),2),
+     SD_Age = round(sd(`Mean Age`), 2),
+     Athlete_status = first(`level of sport`),
+     Risk_of_Bias = first(Risk_of_Bias)
+   #  n_Coping_classification = n(Coping_classification), 
+   #  n_Adp_mal_classification = n(Adp_mal_classification) ,
+    ) 
+
+
+
+ 
+# summarising strategy counts 
+Coping_counts <- anxiety_data  %>% 
+  mutate(`Year of Publication` = as.character(`Year of Publication`),# both char and numeric needed, else converted to rank number (which is odd)
+         `Year of Publication` = as.numeric(`Year of Publication`))  %>% 
+  select(
+    Study, Authors, `Year of Publication`,
+    `Sample Size of Correlation Analysis`,
+    Coping_classification , Adp_mal_classification,
+    ) %>% 
+  group_by(Authors, Coping_classification) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(Coping_class_Strategy_n = paste0(Coping_classification, " (", n, ")")) %>%
+  arrange(Authors) %>%
+  group_by(Authors) %>%
+  summarise(Strategies = paste(Coping_class_Strategy_n, collapse = "\n"), .groups = "drop")
+
+
+Adp_Mal_counts <- anxiety_data  %>% 
+  mutate(`Year of Publication` = as.character(`Year of Publication`),# both char and numeric needed, else converted to rank number (which is odd)
+         `Year of Publication` = as.numeric(`Year of Publication`))  %>% 
+  select(
+    Study, Authors, `Year of Publication`,
+    `Sample Size of Correlation Analysis`,
+    Coping_classification , Adp_mal_classification
+    ) %>% 
+  group_by(Authors,  Adp_mal_classification) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(Adp_Mal_Strategy_n = paste0(Adp_mal_classification, " (", n, ")")) %>%
+  arrange(Authors, ) %>%
+  group_by(Authors, ) %>%
+  summarise(Strategies = paste(Adp_Mal_Strategy_n, collapse = "\n"), .groups = "drop")
+
+## Merging 
+
+merged_table <- left_join(summary_table, Coping_counts , by = c("Authors")) 
+merged_table_full <- left_join(merged_table, Adp_Mal_counts, by = c("Authors"))
+ 
+
+
+athlete_count <- summary(merged_table_full$Athlete_status) %>% broom::tidy()
+year_count <- summary(as.factor(merged_table_full$`Year of Publication`))  %>% broom::tidy() %>%
+  mutate(
+    before_after = as.factor(case_when(
+      names == "2004" ~ "Before 2017",
+      names == "2007" ~ "Before 2017",
+      names == "2009" ~ "Before 2017",
+      names == "2017" ~  "After 2017",
+      names == "2021"  ~ "After 2017",
+      names == "2022"  ~ "After 2017",
+      names == "2023"  ~ "After 2017",
+      names == "2025"  ~ "After 2017",
+    ))
+  ) 
+
+#summary(year_count$before_after) %>% broom::tidy() %>% filter(names == "After 2018" ) %>% select(x)
+#summary(merged_table_full$Athlete_status)
+post_2017 <- round(((summary(year_count$before_after) %>% broom::tidy() %>% filter(names == "After 2017" ) %>% select(x))/7)*100,2)
+
+# summary(anxiety_data$Region)
+# anxiety_data %>% group_by(Study) %>% summarise(Region = Region) 
+weighted_age_mean <- Hmisc::wtd.mean(anxiety_data$`Mean Age`, weights = anxiety_data$n)
+# weighted_age_sd <- sqrt(sum(anxiety_data$n * (anxiety_data$`Mean Age` - weighted_age_mean)^2) / sum(anxiety_data$n))
+weighted_age_sd <- sqrt(Hmisc::wtd.var(anxiety_data$`Mean Age`, weights = anxiety_data$n))
+
+weighted_fem_perc_mean <- Hmisc::wtd.mean(anxiety_data$percentage_female, weights = anxiety_data$n)
+weighted_fem_perc_sd <- sqrt(Hmisc::wtd.var(anxiety_data$percentage_female, weights = anxiety_data$n))
+```
+
+In total, the meta analysis included effect sizes from `r anxiety_data %>% group_by(Study) %>% summarise() %>% nrow()` studies with `r anxiety_data %>% group_by(Study) %>% summarise() %>% nrow() + 1` samples. `r post_2017`% of studies included in the meta-analyses were published in 2017 and after, and `r 100 - post_2017`% were published prior to 2017. Studies were all from peer-reviewed journal articles. Most of the data were derived from cross-sectional studies ($n$ = 10), with 3 studies derived from treatment/intervention designs and 2 studies derived from longitudinal designs. College Athlete samples were most frequently sampled (`r round((5/15)*100,2)`), international and professional athletes (`r round((4/15)*100,2)`%), followed by Olympic and Paralympic athletes (`r round((3/15)*100,2)`), State/Federation level (`r round((2/15)*100, 2)`%), and 1 study using a mix of athletes meeting either national, international or professional level (`r round((1/15)*100, 2)`%). Most studies recruited samples from Northern America ($n$ = `r as.data.frame(merged_table_full) %>% count(Region) %>% filter(Region == "North America") %>% select(n)`), followed by European samples ($n$ = `r as.data.frame(merged_table_full) %>% count(Region) %>% filter(Region == "Europe") %>% select(n)`). Only ($n$ = `r as.data.frame(merged_table_full) %>% count(Region) %>% filter(Region == "Latin America") %>% select(n)`) study recruited samples from Latin America, and ($n$ = `r as.data.frame(merged_table_full) %>% count(Region) %>% filter(Region == "Oceania") %>% select(n)`) study recruited from Oceania. The final sample size included in the meta-analysis that focused on the relationship between coping and and anxiety comprised of `r #sum(anxiety_data %>% group_by(Author_Year) %>% summarise(n_participants = max(`Sample Size of Correlation Analysis`)) %>% select(n_participants))` participants, with a mean age weighted by the sample size of `r round(weighted_age_mean,2)` (SD = `r round(weighted_age_sd,2)`. Female participants on weighted average represented `r round(weighted_fem_perc_mean,4) *100`% (SD = `r round(weighted_fem_perc_sd,4) * 100`). However, 2 studies failed to report gender values (Cresswell & Hodge., 2004; da Silva et al., 2022). Specific details of study characteristics can be seen in Table 1.
+
+```{r Table1, echo = FALSE}
+#merged_table_full %>% arrange(`Year of Publication`) %>% gt()
+```
+
+```{r}
+# anxiety_data %>% 
+#   select(Author_Year, Region, Study_sample_type, Study_Quality, n, `Mean Age`, percentage_female, `Anxiety measure used Wellbeing measure used`,`Var 1`,`Var 2`, coping_Measure_tidy,r ) %>% gt() %>% 
+#   fmt_number(decimals = 2)
+
+study_table <- anxiety_data %>% 
+  select(Author_Year, Region, Study_sample_type, Study_Quality, n, `Mean Age`, percentage_female, `Anxiety measure usedWellbeing measure used`,`Var 1`,`Var 2`, `Var 2 Alpha`, coping_Measure_tidy,r,effect_id ) %>% 
+  group_by(Author_Year, Study_sample_type) %>%
+  mutate(
+    `Coping strategies evaluated` = paste0(unique(`Var 2`), collapse = ", ") # combine strategy options within a group
+    ) %>%
+  summarise(
+    Region = first(Region),
+  #  Sample = Study_sample_type,
+  `Study Quality` = first(Study_Quality),
+    N = mean(n),
+    Age = mean(`Mean Age`),
+    `Female (%)` = mean(percentage_female *100),
+    `Anxiety measure used` = first(`Anxiety measure usedWellbeing measure used`),
+    `Coping measure used` = first(coping_Measure_tidy),
+     `Mean internal consistency` = mean(`Var 2 Alpha`),
+    `Coping strategies evaluated` = first(`Coping strategies evaluated`),
+    k = last(effect_id),
+  ) %>%
+  gt() %>% 
+  tab_stubhead(label = "Study") %>%
+tab_options(row_group.as_column = T) %>%
+  fmt_number(decimals = 2)
+
+study_table 
+#gtsave(study_table, filename = "meta_analysis_study_table.docx" )
+# library(flextable)
+# library(officer)
+# flex_study <- flextable(study_table)  
+#   read_docx() %>%
+#   body_add_flextable() %>%
+#     print(target = "meta_analysis_study_table.docx")
+```
+
+## Quality Assessment and risk of Bias
+
+Of the `r anxiety_data %>% group_by(Study) %>% summarise() %>% nrow()` studies included in the review, `r anxiety_data %>% group_by(Study) %>% summarise() %>% nrow() - 3` used validated measures correctly (Sources). Only 2 studies had justified their sample size (da Silva et al., 2022; Huysmans et al., 2017), but `r anxiety_data %>% group_by(Study) %>% summarise() %>% nrow() - 2` studies had clearly defined their elite athlete samples. Nine studies did not describe or categorise their non-responders , and 3 studies (Bois et al., 2009; da Silva et al., 2022; Knettel et al., 2023) raised concerns over non-response bias. However, non-responder bias could not be determined for 4 studies due to lack of adequate information (Hatzigeorgiadis & Chroni 2007; Poucher et al., 2022; Hut et al., 2023; Urbanski et al., 2023). Four studies did not report repeatable methods (Conteras et al., 2023; Cresswell & Hodge., 2004; da Silva et al., 2022; Goncalves et al., 2021), and only 6 studies clearly described and presented basic data (Bois et al., 2009; Carrasco et al., 2013; Huysman et al., 2017; Poucher et al., 2022; Urbanski et al., 2023; Minkler et al., 2021). In 3 studies, results were not internally consistent (Bois et al., 2009; da Silva et al., 2022; Goncalves et al., 2021), whilst in 2 studies reporting made the internal consistency of results unclear (Conteras et al., 2023; Cresswell & Hodge., 2004). Funding sources or conflict of interest were present in 2 studies (Hut et al., 2023; Minkler et al., 2021). Full AXIS summary table is presented in table ... .
+
+## 3.3. Risk of bias within studies
+
+## 3.4. Results of individual studies
+
+### 3.4.1 Adaptive
+
+```{r}
+Adaptive_data <- anxiety_data %>% filter(
+  Adp_mal_classification== "Adaptive",
+ # id != 150, # bois paper outlier - removing takes estimate to .1339, p =.1149
+ #  Var_2_type != "composite score" # sensitivity analysis - Q reduces from 57.02 to 40.76, and I2 goes from 18.2% to 16.2%, amd estimate magnitude increases from -.07 to -.123 (but still not sig)
+     ) 
+#sum(Adaptive_data$`Sample Size of Correlation Analysis`)
+# Discuss fact that Da Silva paper Freedom from Worry needed rescoring (measure requires it, but paper correlation patterns suggest authors forgot to do it)
+# outlier analysis needed - effect of composite scores seems to be severe, and bois measure looks to be influential
+#SE_z (1 / sqrt(n-3)) or variance_z (1 /(n-3))
+m.gen <- rma.mv(
+  yi = z,
+  V = variance_z,
+  data = Adaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+
+summary(m.gen)
+#baujat(m.gen, xlim=c(0,20), ylim=c(0,0.2), bty="l", las=1)
+
+## Model check
+
+m_within_null <- rma.mv(
+  yi = z,
+  V = variance_z,
+  data = Adaptive_data, random = list(~ 1 | effect_id, ~ 1 | Author_Year)
+  , sigma2 = c(0, NA))
+
+m_between_null <- rma.mv(
+  yi = z,
+  V = variance_z,
+  data = Adaptive_data, 
+  random = list(~ 1 | effect_id, ~ 1 | Author_Year), 
+  sigma2 = c(NA, 0))
+
+m_both_null <- rma.mv( 
+  yi = z,
+  V = variance_z,
+  data = Adaptive_data,
+  random = list(~ 1 | effect_id, ~ 1 | Author_Year), sigma2 = c(0, 0)) 
+
+aov_within <- anova(m.gen, m_within_null) 
+aov_between <- anova(m.gen, m_between_null) 
+aov_bothnull <- anova(m.gen, m_both_null) 
+
+# Join these results in a table
+aov_table <- rbind(
+c(df=aov_between$p.f, aov_between$fit.stats.f[c(3:4, 1)], LRT = NA, p = NA),
+c(df=aov_within$p.r, aov_within$fit.stats.r[c(3:4, 1)], LRT = aov_within$LRT, p = aov_within$pval),
+c(df=aov_between$p.r, aov_between$fit.stats.r[c(3:4, 1)], LRT = aov_between$LRT, p = aov_between$pval),
+c(df=aov_bothnull$p.r, aov_bothnull$fit.stats.r[c(3:4, 1)], LRT = aov_bothnull$LRT, p = aov_bothnull$pval)
+)
+rownames(aov_table) <- c("Three-level model", "Within-studies variance constrained", "Between-studies variance constrained", "Both variance components constrained")
+as.tibble(aov_table) %>%
+  mutate(
+    model_label = recode(
+      as.character(row.names(.)),
+      `1` = "Three-level model",
+      `2` = "Within-studies variance constrained",
+      `3` = "Between-studies variance constrained",
+      `4` = "Both variance components constrained"
+    )
+  ) %>% gt(rowname_col = "model_label"
+  ) %>%
+  cols_label(
+    AIC = "AIC",
+    BIC = "BIC",
+    ll  = "Log-likelihood",
+    LRT = "LRT",
+    p   = "p-value"
+  )
+```
+
+```{r, echo = FALSE}
+
+# Write up stats 
+conf <- predict(m.gen)
+# conf$ci.lb
+# conf$ci.ub
+M_perf <- model_performance(m.gen)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+stats <- broom::tidy(m.gen, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+model_stats <- broom::glance(m.gen)
+
+i2 <- var.comp(m.gen)
+
+summary(i2)
+results_i2 <- i2$results
+total_i2 <- i2$totalI2
+##plot(i2)
+conf_int(m.gen,
+         vcov = "CR2")
+coef_test(m.gen,
+         vcov = "CR2")
+```
+
+Adaptive coping strategies were drawn from `r Adaptive_data %>% group_by(Study, level_of_sport) %>% summarise() %>% nrow() + 1` samples, (`r nrow(Adaptive_data)` effect sizes, `r Adaptive_data %>% group_by(Study) %>% summarise() %>% nrow()` individual studies) and were negatively but not significantly associated with anxiety *r* = `r round(stats$Pearson_R, 2)`, (95% CI \[`r round(conf$ci.lb,2)`, `r round(conf$ci.ub,2)`\]), $p$ = .`r round(stats$p.value, 3)`, $k$ = `r model_stats$nobs`, $n$ = `r sum(Adaptive_data$n)`. This negligible pooled effect for the association between adaptive coping strategies and anxiety severity failed to reject the null hypothesis of this meta analysis. $I^2$ was `r round(total_i2, 2)` with an estimated variance components $tau^2$level 3 = `r results_i2[3,2]`, $tau^2$level 2 = `r results_i2[2,2]`, meaning that $I^2$Level 3 = `r round(results_i2[3,1],2)`% of the total variation could be attributed to between cluster, and $I^2$Level 2 = `r round(results_i2[2,1])`% to within cluster heterogeneity. Significant heterogeneity was detected by the Q statistic ($Q$ = `r round(M_perf$CochransQ,2)`, $p$ \< .`r round(M_perf$p_CochransQ,3)`01).
+
+#### Plots
+
+See forest_plot_code.R file for better forest plots
+
+```{r, ADP_plots ,warning=FALSE, message=FALSE}
+#pdf(file='forestplot_test.pdf') 
+# See forest_plot_code.R file for better forest plots
+# meta::forest(m.gen, 
+#            #  sortvar = TE,
+#              addpred=TRUE,
+#              addcred = TRUE,
+#              showweights=TRUE, 
+#              header="ID", 
+#              prediction = TRUE, 
+#              print.tau2 = TRUE,
+#          #     alim=c(-1,6),
+#          # #    xlim=c(-8,7),
+#          #     ylim =c(118,0), 
+#              fontsize = .5,
+#            # slab = paste(dat$Author_Year, ", n=", dat$n), # study labels
+#              ilab = Adaptive_data$n,
+#              leftlabs = c("Author_Year", "z", "SE"),
+#              layout = "RevMan5")
+#addpoly(m.gen, row = -1, cex = 0.8)
+#dev.off()
+
+
+# dat <- escalc(measure="ZCOR", yi=mod_z, vi=variance_z, 
+#               data=Adaptive_data, slab=paste(Author_Year, effect_id))
+# dat
+# V <- vcalc(variance_z, cluster=Author_Year, obs=effect_id, data=Adaptive_data, rho=0.8)
+# res <- rma(yi,vi,data=dat)
+# res
+# agg <- aggregate(dat, cluster=Author_Year, V=vcov(res, type="obs"), addk=TRUE)
+# agg
+# res <- rma(yi, vi, method="REML", data=agg, digits=3, slab=Author_Year)
+# res
+# 
+
+
+#forest plot
+# forest(res, mlab="Pooled Estimate", addpred=TRUE, header="Sample", 
+#      #  studylab="sample",
+#        ilab=ki, ilab.xpos=-2.7, cex=.89, order="obs", 
+#        xlim=c(-8,6), at=seq(-0.5,1.5,by=0.5), showweights=TRUE)
+# text(-2.7, res$k+2, "Number of Estimates", cex=.89, font=1.5)  
+# text(2.7, res$k+2, "Weight", cex=.89, font=1.5)  
+```
+
+```{r}
+funnel(m.gen,
+       level = c(90, 95, 99),
+       shade=c("white", "gray55", "gray75"), 
+       xlab= "Fischer's z",
+       label=FALSE,
+      # digits=c(0, 1),
+       refline = stats$estimate, 
+     #  main="Contour-Enhanced Funnel Plot", 
+      # legend = ("topleft")
+       )
+legend("topleft",
+       legend = c(".00 < p ≤ .01" ,".01 < p ≤ .05", ".05 < p ≤ .10", ".10 < p ≤ 1.00"),
+       fill   = c( "#CCCCCC", "gray75", "gray55", "white"),
+       bty    = "y")
+
+```
+
+#### Detection of Influential Cases and Outliers
+
+```{r}
+outlier_detection <- Adaptive_data %>% mutate(
+  Upper_z_ci = (z + 1.96 * sqrt(variance_z)),
+  Lower_z_ci = (z - 1.96 * sqrt(variance_z)),
+  Outlier = as.factor(case_when(
+    Upper_z_ci < conf$ci.lb | Lower_z_ci > conf$ci.ub ~ "outlier",
+    Upper_z_ci > conf$ci.lb | Lower_z_ci < conf$ci.ub ~ "non outlier",
+  )
+)) 
+summary(outlier_detection$Outlier)
+
+table <- outlier_detection %>% 
+  filter(Outlier == "outlier") %>% 
+  select(
+    Author_Year, Study_sample_type, Study_Quality,
+    Var_1_summarised,`Var 2`, r, z,# variance_z,
+   # Lower_z_ci,Upper_z_ci
+    ) %>%
+  mutate( Pooled_effect = conf$pred, Pooled_lb_ci = conf$ci.lb, Pooled_ub_ci = conf$ci.ub) %>%     group_by(Author_Year) %>%
+  arrange(desc(z), by_group = TRUE) %>% 
+  rename(
+  "Study" = "Author_Year" ,
+  "Sample" = "Study_sample_type",
+  "Study Quality" = "Study_Quality",
+  "Anxiety evaluated" = "Var_1_summarised",
+  "Coping Strategy" = "Var 2",
+  "Study effect (Pearson's r)" =  "r",
+  "Study effect (Fischer's z)" = "z",
+  "Pooled effect (z)" = "Pooled_effect",
+  "Pooled effect (95% CI lower bound)" = "Pooled_lb_ci",
+  "Pooled effect (95% CI upper bound)" = "Pooled_ub_ci"
+  ) 
+  #ungroup() %>%
+ 
+
+table %>%  gt() %>% fmt_number(decimals = 3) %>%
+  tab_stubhead(label = "Study") %>%
+tab_options(row_group.as_column = T) 
+
+#influence(m.gen)
+
+ggplot(outlier_detection,
+       aes(x = z, colour = Outlier, fill = Outlier)) +
+  # Add a histogram with transparent bars (alpha = .2)
+  geom_histogram(alpha = .2) +
+  # Add a vertical line at the pooled effect value (m_re$b[1])
+  geom_vline(xintercept = stats$estimate) +
+  labs( x= "Fischer's Z") +
+  # Apply a black and white theme
+  theme_bw() #+ facet_wrap(~Risk_of_Bias)
+
+```
+
+```{r ,message=FALSE , warning = FALSE}
+sensitivity_data <- outlier_detection %>%
+  filter(Outlier != "outlier")
+sens_m.gen <- rma.mv(
+  yi = z,
+  V = variance_z,
+  data = sensitivity_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+sens_m.gen
+
+
+# meta::forest(sens_m.gen, 
+#            #  sortvar = TE,
+#              addpred=TRUE,
+#              addcred = TRUE,
+#              showweights=FALSE, 
+#              header="ID", 
+#              prediction = TRUE, 
+#              print.tau2 = TRUE,
+#          #     alim=c(-1,6),
+#          # #    xlim=c(-8,7),
+#          #     ylim =c(118,0), 
+#              fontsize = .5,
+#            # slab = paste(dat$Author_Year, ", n=", dat$n), # study labels
+#              ilab = sensitivity_data$n,
+#              leftlabs = c("Author_Year", "z", "SE"),
+#              layout = "RevMan5")
+
+
+## Write up stats
+
+#dmetar::variance_decomposition(sens_m.gen)
+conf <- predict(sens_m.gen)
+# conf$ci.lb
+# conf$ci.ub
+M_perf <- model_performance(sens_m.gen)
+# Compute robust CHE results for rho
+CHEresultrobust <- robust(sens_m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+CHEresultrobust
+
+sens_stats <- broom::tidy(m.gen, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+sens_model_stats <- broom::glance(sens_m.gen)
+
+i2 <- var.comp(sens_m.gen)
+summary(i2)
+results_i2 <- i2$results
+total_i2 <- i2$totalI2
+##plot(i2)
+conf_int(m.gen,
+         vcov = "CR2")
+coef_test(m.gen,
+         vcov = "CR2")
+table
+```
+
+Outlier and diagnostics were performed as significant heterogeneity was present. The Fischer's Z of `r max(row_number(table))` studies were outside the 95% CI range of the pooled effect. Details of these studies are presented in table ... . The association between self talk and somatic anxiety ($r$ = .45) by Bois et al.,(2009) recorded the most influential positive association, whilst the association between *Freedom from Worry* and *Worry* ($r$ = -.77) by Cresswell & Hodge (2004) recorded the most influential negative association. Visual inspection in figure ... shows the identified outliers are distributed reasonably evenly, suggesting no clear indication of bias.
+
+A sensitivity analysis was conducted with the removal of outlying effects to determine if they were influential. This revealed a similar overall effect size that was also not significant (*r* = `r round(sens_stats$Pearson_R,2)`, (95% CI \[`r round(sens_stats$Pearson_low,2)`, `r round(sens_stats$Pearson_high,2)`\]), $p$ = `r round(sens_stats$p.value, 3)`), which was comparable to the original analysis (*r* = `r round(stats$Pearson_R,2)`, (95% CI \[`r round(stats$Pearson_low ,2)`, `r round(stats$Pearson_high,2)`\]), $p$ = `r round(stats$p.value, 3)`). As the sensitivity analysis suggests that removing the outliers had almost no effect on the whole whole analysis, it suggests the outliers had negligible bias on the pooled effect. The original analysis was retained for the remainder of the analyses.
+
+#### Publication Bias
+
+```{r}
+# edit dimensions of plot, so that it renders clearly to word document. 
+funnel(m.gen,
+       level = c(90, 95, 99),
+       shade=c("white", "gray55", "gray75"), 
+       xlab= "Fischer's z",
+       label=FALSE,
+      # digits=c(0, 1),
+       refline = stats$estimate, 
+     #  main="Contour-Enhanced Funnel Plot", 
+      # legend = ("topleft")
+       )
+legend("topleft",
+       legend = c(".00 < p ≤ .01" ,".01 < p ≤ .05", ".05 < p ≤ .10", ".10 < p ≤ 1.00"),
+       fill   = c( "#CCCCCC", "gray75", "gray55", "white"),
+       bty    = "y")
+
+
+# Method for Egger from here : https://stat.ethz.ch/pipermail/r-sig-meta-analysis/2020-December/002471.html#:~:text=Say%20that%20data%20includes%20a%20variable%20called%20sei,paper%2C%20and%20example%20code%20in%20our%20supplementary%20materials.  and discussed in this paper https://osf.io/vqp8u_v1
+## SE_z (1 / sqrt(n-3)) or variance_z (1 /(n-3))
+# set model with SE_z set as moderator and variance for V.
+egger_test_model <- m.gen <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ SE_z, #
+  data = Adaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+ # test = "t",
+ # method = "REML"
+) 
+
+# Then apply cluster-robust standard errors for the RVE-based test:
+eggers_results <- coef_test(egger_test_model, vcov = "CR2")  
+  
+# regtest(m.gen)
+# trimfill(egger_test_model)
+```
+
+For adaptive coping strategies, indications of publication bias could be found. Visual inspection of the funnel plot in figure ... suggested an asymmetrical distribution, with studies tending to the negative side of the overall mean effect size. Egger's regression test was adapted to the multilevel context using robust variance estimation (RVE) (Rodgers & Pustejovsky, 2021). Results of the adapted Egger's regression test was not significant, suggesting asymmetry was not influential ($z$ = `r round(eggers_results[1,2],2)`, $SE$ = `r round(eggers_results[1,3],2)` , $p$ = `r round(eggers_results[1,7],2)`).
+
+#### Moderator Analyses
+
+```{r female_perc_mod}
+Adaptive_data <- anxiety_data %>% filter(
+  Adp_mal_classification== "Adaptive",
+ # id != 150, # bois paper outlier - removing takes estimate to .1339, p =.1149
+ #  Var_2_type != "composite score" # sensitivity analysis - Q reduces from 57.02 to 40.76, and I2 goes from 18.2% to 16.2%, amd estimate magnitude increases from -.07 to -.123 (but still not sig)
+  ) %>%
+  mutate(percentage_female_imp = replace_na(percentage_female, 0),
+         Risk_of_Bias2 = as.factor(case_when(
+           Risk_of_Bias == "Low Risk" ~ "Low Risk",
+           Risk_of_Bias == "Medium Risk" ~ "High Risk",
+           Risk_of_Bias == "High Risk" ~ "High Risk",
+         )),
+          `Var 2 Alpha` = as.numeric(`Var 2 Alpha`),
+     #    gender_missing = bind_shadow(percentage_female),
+        coping_Measure = `emotion regulation_or_coping measure used`
+         ) %>% bind_shadow()
+
+
+
+# Gender moderator
+
+gender_raw <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ percentage_female,
+#  mods = ~ `Var 2 Alpha`,
+#  dfs="contain",
+#  mods = ~ -1 + Risk_of_Bias + Coping_classification  ,
+# mods = ~ -1 + Var_1_summarised  ,
+#  mods = ~ -1 + Risk_of_Bias + `Mean Age`,
+#  mods = ~  + Coping_classification  * Risk_of_Bias ,
+  data = Adaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+gender_raw_conf <- predict(gender_raw)
+# conf$ci.lb
+# conf$ci.ub
+gender_raw_M_perf <- model_performance(gender_raw)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+gender_raw_stats <- broom::tidy(gender_raw, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+gender_raw_model_stats <- broom::glance(gender_raw)
+
+
+# generating table stats
+k <- gender_raw_model_stats$nobs
+n <- Adaptive_data %>% select(z, variance_z, percentage_female, `Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+studies_effects <- Adaptive_data %>% select( Study,
+  z, variance_z, percentage_female, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+QM <- gender_raw_model_stats$cochran.qm
+`QM p` <- gender_raw_model_stats$p.value.cochran.qm
+b1 <- gender_raw_stats[2,] %>% select(Pearson_R)
+z <- gender_raw_stats[2,] %>% select(estimate)
+`estimate p` <- gender_raw_stats[2,] %>% select(p.value)
+ Percentage_Female <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+                                                                              estimate_p= `estimate p`)
+`Percentage Female` <- cbind(n_studies,k, n, QM, `QM p`, b1, z, `estimate p`)
+```
+
+```{r gender_NA_mod}
+gender_missing <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ -1+ percentage_female_NA,
+#  dfs="contain",
+#  mods = ~ -1 + Risk_of_Bias + Coping_classification  ,
+# mods = ~ -1 + Var_1_summarised  ,
+#  mods = ~ -1 + Risk_of_Bias + `Mean Age`,
+#  mods = ~  + Coping_classification  * Risk_of_Bias ,
+  data = Adaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+gender_missing_conf <- predict(gender_missing)
+# conf$ci.lb
+# conf$ci.ub
+gender_missing_M_perf <- model_performance(gender_missing)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+gender_missing_stats <- broom::tidy(gender_missing, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+gender_missing_model_stats <- broom::glance(gender_missing)
+
+
+# generating table stats
+k <- gender_missing_model_stats$nobs
+n <- Adaptive_data %>% select(z, variance_z, percentage_female_NA,`Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+
+studies_effects <- Adaptive_data %>% select( Study,
+  z, variance_z, percentage_female_NA, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+
+QM <- gender_missing_model_stats$cochran.qm
+`QM p` <- gender_missing_model_stats$p.value.cochran.qm
+b1 <- gender_missing_stats[2,] %>% select(Pearson_R)
+z <- gender_missing_stats[2,] %>% select(estimate)
+`estimate p` <- gender_missing_stats[2,] %>% select(p.value)
+ Gender_data <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+                                                                              estimate_p= `estimate p`)
+`Gender data` <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`)
+
+
+```
+
+```{r coping_measure_mod}
+
+Adaptive_data <- Adaptive_data %>%
+  mutate(coping_Measure_tidy_athlete_focus = as.factor(case_when(
+    coping_Measure_tidy == "Brief COPE" ~ "Brief COPE",
+   # coping_Measure_tidy == "Difficulties in Emotion Regulation Scale-Short Form" ~ "Difficulties in Emotion Regulation Scale-Short Form",
+    coping_Measure_tidy == "Inventory for Stressful Situations (CISS)" ~ "Inventory for Stressful Situations (CISS)",
+    coping_Measure_tidy == "COPE, MCOPE, Test of performance strategies (TOPS)" ~ "Athlete specific measure",
+    coping_Measure_tidy == "Test of Performance Strategies" ~ "Athlete specific measure",
+    coping_Measure_tidy == "Athletic Coping Skills Inventory" ~ "Athlete specific measure"
+  )),
+    coping_Measure_tidy_athlete_focus = relevel(coping_Measure_tidy_athlete_focus,
+                                                ref = "Athlete specific measure"),
+   coping_Measure_tidy = relevel( coping_Measure_tidy, 
+                                  ref = "Athletic Coping Skills Inventory")
+  )
+
+  coping_measure <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ -1 + coping_Measure_tidy,
+#  mods = ~ -1 + Region ,
+  data = Adaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+coping_measure_conf <- predict(coping_measure)
+# conf$ci.lb
+# conf$ci.ub
+coping_measure_M_perf <- model_performance(coping_measure)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+coping_measure_stats <- broom::tidy(coping_measure, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+coping_measure_model_stats <- broom::glance(coping_measure)
+
+
+# generating table stats
+k <- coping_measure_model_stats$nobs
+n <- Adaptive_data %>% select(z, variance_z, coping_Measure_tidy,`Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+studies_effects <- Adaptive_data %>% select( Study,
+  z, variance_z, coping_Measure_tidy, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+
+QM <- coping_measure_model_stats$cochran.qm
+`QM p` <- coping_measure_model_stats$p.value.cochran.qm
+b1 <- coping_measure_stats[2,] %>% select(Pearson_R)
+z <- coping_measure_stats[2,] %>% select(estimate)
+`estimate p` <- coping_measure_stats[2,] %>% select(p.value)
+ coping_measure_data <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+                                                                              estimate_p= `estimate p`)
+`Coping Measure` <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`)
+
+
+```
+
+```{r pairwise_coping_measure_comparison}
+  pair_coping_measure <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ 1+ coping_Measure_tidy,
+#  mods = ~ -1 + Region ,
+  data = Adaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+pair_coping_measure_conf <- predict(pair_coping_measure)
+# conf$ci.lb
+# conf$ci.ub
+#coping_measure_M_perf <- model_performance(coping_measure)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+pair_coping_measure_stats <- broom::tidy(pair_coping_measure, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+
+```
+
+```{r Adp_coping_classification_mod}
+
+Adaptive_data$Coping_classification_prob_ref <- relevel(
+  Adaptive_data$Coping_classification,
+  ref = "Problem Focused Coping"  
+)
+
+  coping_classification <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ -1 + Coping_classification_prob_ref , # not changed write up yet to accomodate change
+# mods = ~ -1 + Var_1_summarised  ,
+#  mods = ~ -1 + Risk_of_Bias + `Mean Age`,
+#  mods = ~  + Coping_classification  * Risk_of_Bias ,
+  data = Adaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+coping_classification_conf <- predict(coping_classification)
+# conf$ci.lb
+# conf$ci.ub
+coping_classification_M_perf <- model_performance(coping_classification)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+coping_classification_stats <- broom::tidy(coping_classification, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+coping_classification_model_stats <- broom::glance(coping_classification)
+
+
+# generating table stats
+k <- coping_classification_model_stats$nobs
+n <- Adaptive_data %>% select(z, variance_z, coping_Measure_tidy,`Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+studies_effects <- Adaptive_data %>% select( Study,
+  z, variance_z, Coping_classification, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+
+QM <- coping_classification_model_stats$cochran.qm
+`QM p` <- coping_classification_model_stats$p.value.cochran.qm
+b1 <- coping_classification_stats[2,] %>% select(Pearson_R)
+z <- coping_classification_stats[2,] %>% select(estimate)
+`estimate p` <- coping_classification_stats[2,] %>% select(p.value)
+ coping_classification_data <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+                                                                              estimate_p= `estimate p`)
+`Coping Classification` <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`)
+
+
+```
+
+```{r pairwise_classification}
+pair_coping_classification <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ 1 + Coping_classification_prob_ref , # not changed write up yet to accomodate change
+# mods = ~ -1 + Var_1_summarised  ,
+#  mods = ~ -1 + Risk_of_Bias + `Mean Age`,
+#  mods = ~  + Coping_classification  * Risk_of_Bias ,
+  data = Adaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+coping_classification_conf <- predict(pair_coping_classification)
+# conf$ci.lb
+# conf$ci.ub
+coping_classification_M_perf <- model_performance(pair_coping_classification)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+coping_classification_stats <- broom::tidy(pair_coping_classification, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+coping_classification_model_stats <- broom::glance(pair_coping_classification)
+```
+
+```{r, mean_age_mod}
+Mean_Age <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ `Mean Age`,
+  data = Adaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+
+Mean_Age_conf <- predict(Mean_Age)
+# conf$ci.lb
+# conf$ci.ub
+Mean_Age_M_perf <- model_performance(Mean_Age)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+Mean_Age_stats <- broom::tidy(Mean_Age, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+Mean_Age_model_stats <- broom::glance(Mean_Age)
+
+
+# generating table stats
+k <- Mean_Age_model_stats$nobs
+n <- Adaptive_data %>% select(z, variance_z, `Mean Age`,`Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+
+studies_effects <- Adaptive_data %>% select( Study,
+  z, variance_z, `Mean Age`, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+QM <- Mean_Age_model_stats$cochran.qm
+`QM p` <- Mean_Age_model_stats$p.value.cochran.qm
+b1 <- Mean_Age_stats[2,] %>% select(Pearson_R)
+z <- Mean_Age_stats[2,] %>% select(estimate)
+`estimate p` <- Mean_Age_stats[2,] %>% select(p.value)
+ Mean_Age_data <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+                                                                              estimate_p= `estimate p`)
+`Mean Age` <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`)
+
+```
+
+```{r alpha_mod}
+alpha <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~`Var 2 Alpha`,
+#  dfs="contain",
+#  mods = ~ -1 + Risk_of_Bias + Coping_classification  ,
+# mods = ~ -1 + Var_1_summarised  ,
+#  mods = ~ -1 + Risk_of_Bias + `Mean Age`,
+#  mods = ~  + Coping_classification  * Risk_of_Bias ,
+  data = Adaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+alpha_conf <- predict(alpha)
+# conf$ci.lb
+# conf$ci.ub
+alpha_M_perf <- model_performance(alpha)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+alpha_stats <- broom::tidy( alpha, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+alpha_model_stats <- broom::glance( alpha)
+
+
+# generating table stats
+k <- alpha_model_stats$nobs
+n <- Adaptive_data %>% select(z, variance_z, `Var 2 Alpha`,`Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+
+studies_effects <- Adaptive_data %>% select( Study,
+  z, variance_z, `Var 2 Alpha`, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+
+QM <- alpha_model_stats$cochran.qm
+`QM p` <- alpha_model_stats$p.value.cochran.qm
+b1 <- alpha_stats[2,] %>% select(Pearson_R)
+z <- alpha_stats[2,] %>% select(estimate)
+`estimate p` <- alpha_stats[2,] %>% select(p.value)
+ alpha_data <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+                                                                              estimate_p= `estimate p`)
+`Alpha data` <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`)
+
+
+```
+
+```{r alpha_NA_mod}
+alpha_NA <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ -1 +`Var 2 Alpha_NA`,
+#  dfs="contain",
+#  mods = ~ -1 + Risk_of_Bias + Coping_classification  ,
+# mods = ~ -1 + Var_1_summarised  ,
+#  mods = ~ -1 + Risk_of_Bias + `Mean Age`,
+#  mods = ~  + Coping_classification  * Risk_of_Bias ,
+  data = Adaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+alpha_NA_conf <- predict(alpha_NA)
+# conf$ci.lb
+# conf$ci.ub
+alpha_NA_M_perf <- model_performance(alpha_NA)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+alpha_NA_stats <- broom::tidy( alpha_NA, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+alpha_NA_model_stats <- broom::glance( alpha_NA)
+
+
+# generating table stats
+k <- alpha_NA_model_stats$nobs
+n <- Adaptive_data %>% select(z, variance_z, `Var 2 Alpha_NA`,`Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+
+studies_effects <- Adaptive_data %>% select( Study,
+  z, variance_z, `Var 2 Alpha_NA`, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+
+QM <- alpha_NA_model_stats$cochran.qm
+`QM p` <- alpha_NA_model_stats$p.value.cochran.qm
+b1 <- alpha_NA_stats[2,] %>% select(Pearson_R)
+z <- alpha_NA_stats[2,] %>% select(estimate)
+`estimate p` <- alpha_stats[2,] %>% select(p.value)
+ alpha_NA_data <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+                                                                              estimate_p= `estimate p`)
+`Alpha NA data` <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`)
+
+
+```
+
+```{r}
+# anova(
+#   m.gen1, 
+# #  m.gen2, 
+#    m.gen3,
+#  #  m.gen4,
+# #  m.gen5,
+#   refit = TRUE
+# )
+```
+
+The study characteristics of percentage of female participants, mean participant age, coping classification, and coping measure were examined in moderator analyses to asses their potential impact on the association between adaptive coping strategies and anxiety severity.
+
+Female athletes are identified has having significantly higher levels of anxiety in comparison to their male athletes (source), and so the percentage of female participants was investigated as a potential moderator. Two of the included studies did not report gender distributions in their samples, resulting in `r sum(is.na(Adaptive_data$percentage_female))` cases of missing data in the moderator analysis. This presence of missing data was detrimental to the power of the moderator analysis, and so a follow up analysis investigating the presence of missing gender data was also conducted. Moderator analysis showed that the percentage of female participants had no significant effect on the association between adaptive coping and anxiety (k = `r Percentage_Female$k`, n = `r Percentage_Female$n`, $QM$ = `r round(Percentage_Female$QM,2)`, $p$ = `r round(Percentage_Female$QM_p,3)`), however the moderate strength of the pooled estimate of the moderator effect suggested analysis was likely underpowered to detect a significant effect due to missing values ($r$ = `r round(Percentage_Female$Pearson_R,2)`, 95% CI\[`r round(gender_raw_stats[2,10],3)`, `r round(gender_raw_stats[2,11],3)`\]). In the follow-up analysis, the non-reporting of gender in a study was investigated as a moderator. The presence of missing gender data was a significant moderator on the association between adaptive coping strategies and anxiety (k = `r Gender_data$k`, n = `r Gender_data$n`, $QM$ = `r round(Gender_data$QM,2)`, $p$ = `r round(Gender_data$QM_p,3)`). For the studies that reported gender values in their descriptive statistics, the pooled effect size was not significant ($r$ = `r round(gender_missing_stats[1,9],3)`, 95% CI\[`r round(gender_missing_stats[1,10],3)`, `r round(gender_missing_stats[1,11],3)`\]), whilst for the studies that did not report gender values, the pooled effect size was significant with a moderate negative effect ($r$ = `r round(gender_missing_stats[2,9],3)`, 95% CI\[`r round(gender_missing_stats[2,10],3)`, `r round(gender_missing_stats[2,11],3)`\]). This suggests studies that did not report gender distributions tended to report stronger protective associations between adaptive coping strategies and anxiety levels in elite athletes.
+
+Moderator analysis demonstrated mean age of participants was not a significant moderator (k = `r Mean_Age_data$k`, n = `r Mean_Age_data$n`, $QM$ = `r round(Mean_Age_data$QM,3)`, $p$ = `r round(Mean_Age_data$QM_p,3)`). The pooled moderating effect size of mean participant age was negligible and not significant ($r$ \< `r round(Mean_Age_stats[2,9], 3)`.01, 95% CI\[ `r round(Mean_Age_stats[2,10], 3)`,`r round(Mean_Age_stats[2,11], 3)`\] ).
+
+Coping classification moderated the association between coping and anxiety levels in elite athletes (k = `r coping_classification_data$k`, n = `r coping_classification_data$n`, $QM$ = `r round(coping_classification_data$QM,2)`, $p$ \< .`r round(coping_classification_data$QM_p,3)`01). For the adaptive strategies, only the composite combined coping measures reported significant negative pooled effects ($r$ = `r round(coping_classification_stats[2,9],3)`, 95% CI\[`r round(coping_classification_stats[2,10],3)`, `r round(coping_classification_stats[2,11],3)`). Pertinent to the hypothesis, the pooled effect of adaptive problem focused strategies was negligible and non-significant effect on anxiety ($r$ = `r round(coping_classification_stats[1,9],3)`, 95% CI\[`r round(coping_classification_stats[1,10],3)`, `r round(coping_classification_stats[1,11],3)`). The use of adaptive emotion focused coping strategies was also negligible and non-significant ($r$ = `r round(coping_classification_stats[3,9],3)`, 95% CI\[`r round(coping_classification_stats[3,10],3)`, `r round(coping_classification_stats[3,11],3)`). Post-hoc pairwise found the pooled effects of studies evaluating adaptive combined coping were significantly more negative ($r$ = `r round(coping_classification_stats$Pearson_R[2],3)`, 95% CI\[`r round(coping_classification_stats[2,10],3)`, `r round(coping_classification_stats[2,11],3)`) in comparison to problem focused coping. No significant differences were recorded between adaptive emotion focused coping and problem focused coping ($r$ = `r round(coping_classification_stats$Pearson_R[3],3)`, 95% CI\[`r round(coping_classification_stats[3,10],3)`, `r round(coping_classification_stats[3,11],3)`). As it was hypothesised that adaptive problem focused coping would have the most beneficial association with elite athlete anxiety, these results failed to reject the null hypothesis. The results suggest the combined use of a variety of coping styles is a protective factor against anxiety in elite sport populations, whilst the increased use of just problem focused coping strategies appears to have little impact on elite athlete anxiety. Full details of the analysis can be found in table ... .
+
+The influence of coping measures was also evaluated as a moderator on the association between coping and anxiety levels in elite athletes (k = `r coping_measure_data$k`, n = `r coping_measure_data$n`, $QM$ = `r round(coping_measure_data$QM,2)`, $p$ \< .`r round(coping_measure_data$QM_p,3)`01). The studies which evaluated coping with the ACSI had the strongest negative significant pooled effect size ($r$ = `r round(coping_measure_stats[1,9],3)`, 95% CI\[`r round(coping_measure_stats[1,10],3)`, `r round(coping_measure_stats[1,11],3)`), suggesting studies which used the ACSI were more likely to demonstrate a protective effect between the increased use of coping strategies and anxiety. Meanwhile, studies which used the Brief Cope scale had the strongest positive pooled effect size ($r$ = `r round(coping_measure_stats[2,9],3)`, 95% CI\[`r round(coping_measure_stats[2,10],3)`, `r round(coping_measure_stats[2,11],3)`). Full details of the analysis are presented in table ...
+
+Post-hoc pairwise found that that the pooled effect of the Brief COPE was significantly more positive ($r$ = `r round(pair_coping_measure_stats[2,9],3)`, 95% CI\[`r round(pair_coping_measure_stats[2,10],3)`, `r round(pair_coping_measure_stats[2,11],3)`), the CISS ($r$ = `r round(pair_coping_measure_stats[4,9],3)`, 95% CI\[`r round(pair_coping_measure_stats[4,10],3)`, `r round(pair_coping_measure_stats[4,11],3)`) and the TOPS ($r$ = `r round(pair_coping_measure_stats[5,9],3)`, 95% CI\[`r round(pair_coping_measure_stats[5,10],3)`, `r round(pair_coping_measure_stats[5,11],3)`) in comparison to the ACSI ($r$ = `r round(pair_coping_measure_stats[1,9],3)`, 95% CI\[`r round(pair_coping_measure_stats[1,10],3)`, `r round(pair_coping_measure_stats[1,11],3)`). No significant differences were present between the ACSI and the Heterz.. & Chroni (????) hybrid measure ($r$ = `r round(pair_coping_measure_stats[3,9],3)`, 95% CI\[`r round(pair_coping_measure_stats[3,10],3)`, `r round(pair_coping_measure_stats[3,11],3)`). Cumulatively, the moderator and post-hoc analysis of the measures suggests studies using the ACSI are more likely to report a negative effect between adaptive coping strategies and anxiety in elite athletes.
+
+This suggests studies using the Brief coping scale are more likely to demonstrate the use of coping strategies as an anxiety risk factor, regardless of the adaptive/maladaptive labelling of its respective strategies. The remaining measures had no significant pooled effect on the association between coping and anxiety, and their full details can be found in table ... .
+
+Measurement internal consistency reliability evaluated by Cronbach's Alpha was investigated as a moderator. Measurement reliability had no significant effect on the association between Adaptive coping and anxiety (k = `r alpha_data$k`, n = `r alpha_data$n`, $QM$ = `r round(alpha_data$QM,2)`, $p$ \< .`r round(alpha_data$QM_p,3)`)01. The pooled moderating effect size of measurement reliability had a small and non significant effect ($r$ = `r round(alpha_stats$Pearson_R[2],2)`, 95% CI\[`r round(alpha_stats[2,10],3)`, `r round(alpha_stats[2,11],3)`\]).
+
+Similarly to the percentage of female participants, there was a high proportion of missing values for measurement reliability data. In the Adaptive strategies, 50 effects within 4 studies did not report Cronbach's Alpha for their sample. Due to the high proportion of missing values, a sensitivity analysis of the effect of missing Cronbach's Alpha was conducted. The presence of missing reliability data was a significant moderator on the association between adaptive coping strategies and anxiety (k = `r alpha_NA_data$k`, n = `r alpha_NA_data$n`, $QM$ = `r round(alpha_NA_data$QM,2)`, $p$ \< .`r round(alpha_NA_data$QM_p,3)`01). For the studies that reported reliability data for their sample, the pooled effect size was not significant ($r$ = `r round(alpha_NA_stats[1,9],3)`, 95% CI\[`r round(alpha_NA_stats[1,10],3)`, `r round(alpha_NA_stats[1,11],3)`\]), whilst for the studies that did not report sample reliabiltiy data, the pooled effect size was small and significant ($r$ = `r round(alpha_NA_stats[2,9],3)`, 95% CI\[`r round(alpha_NA_stats[2,10],3)`, `r round(alpha_NA_stats[2,11],3)`\]). This suggests studies that did not report the internal reliability statistics of their sample tended to report stronger protective associations between adaptive coping strategies and anxiety levels in elite athletes in comparison to studies that did report sample specific reliability data.
+
+```{r}
+grand_moderator_table <- rbind(`Percentage Female`, `Gender data`, 
+                               `Mean Age` ,`Coping Classification`, `Coping Measure`, `Alpha data`, `Alpha NA data`)
+
+grand_moderator_table %>% mutate(label_ID = row_number(),
+                                 label = case_when(
+                                   label_ID == "1"  ~ "Percentage Female",
+                                   label_ID == "2"  ~ "Presence of Gender data", 
+                                   label_ID == "3"  ~ "Mean Age",
+                                   label_ID == "4"  ~ "Coping Classification",
+                                   label_ID == "5"  ~ "Coping Measure",
+                                   label_ID == "6"  ~ "Coping Measure Reliability" ,
+                                   label_ID == "7"  ~ "Presence of Coping Measure Reliability data" 
+                                 )
+                                 ) %>%
+  select(label, n_studies, k, n, QM, `QM p`) %>%
+  gt() %>% fmt_number(decimals = 4) %>% 
+  tab_header(
+    title = "Moderator fit Analysis"
+  )
+
+count_data_coping_classification <- Adaptive_data %>%
+  group_by(Coping_classification) %>%
+  summarise(
+    k = n(),
+    n = sum(n)
+            ) %>% as.data.frame() 
+
+coping_classification_stats %>% as.data.frame() %>% select(-type) %>% 
+  arrange(desc(estimate)) %>%
+  mutate(term = str_remove(term,"Coping_classification"),
+     #    n = count_data_coping_classification$n
+         ) %>%
+  left_join(
+    y = count_data_coping_classification,
+    by = join_by(term == Coping_classification),
+  ) %>%
+  select(term, k, n, estimate, Pearson_R, Pearson_low, Pearson_high, p.value) %>%
+  gt() %>% fmt_number(decimals = 4)%>% 
+  tab_header(
+    title = "Coping Classification Moderator Analysis"
+  )
+
+count_data_coping_measure <- Adaptive_data %>%
+  group_by(coping_Measure_tidy) %>%
+  summarise(
+    k = n(),
+    n = sum(n)
+            ) %>% as.data.frame() 
+
+coping_measure_stats %>% select(-type) %>% arrange(desc(estimate)) %>%
+  mutate(term = str_remove(term,"coping_Measure_tidy")) %>%
+  left_join(
+    y = count_data_coping_measure,
+    by = join_by(term == coping_Measure_tidy),
+  ) %>%
+  select(term, k, n, estimate, Pearson_R, Pearson_low, Pearson_high, p.value) %>%
+  gt() %>% fmt_number(decimals = 4) %>% 
+  tab_header(
+    title = "Coping Measures Moderator Analysis"
+  )
+```
+
+### 3.4.2 Maladaptive
+
+```{r}
+Maladaptive_data <- anxiety_data %>% filter(
+  Adp_mal_classification== "Maladaptive",
+ # id != 150, # bois paper outlier - removing takes estimate to .1339, p =.1149
+ #  Var_2_type != "composite score" # sensitivity analysis - Q reduces from 57.02 to 40.76, and I2 goes from 18.2% to 16.2%, amd estimate magnitude increases from -.07 to -.123 (but still not sig)
+     ) %>% bind_shadow()
+#sum(Adaptive_data$`Sample Size of Correlation Analysis`)
+# Discuss fact that Da Silva paper Freedom from Worry needed rescoring (measure requires it, but paper correlation patterns suggest authors forgot to do it)
+# outlier analysis needed - effect of composite scores seems to be severe, and bois measure looks to be influential
+#SE_z (1 / sqrt(n-3)) or variance_z (1 /(n-3))
+m.gen <- rma.mv(
+  yi = z,
+  V = variance_z,
+  data = Maladaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+
+summary(m.gen)
+#baujat(m.gen, xlim=c(0,20), ylim=c(0,0.2), bty="l", las=1)
+
+## Model check
+
+m_within_null <- rma.mv(
+  yi = z,
+  V = variance_z,
+  data = Maladaptive_data, random = list(~ 1 | effect_id, ~ 1 | Author_Year)
+  , sigma2 = c(0, NA))
+
+m_between_null <- rma.mv(
+  yi = z,
+  V = variance_z,
+  data = Maladaptive_data, 
+  random = list(~ 1 | effect_id, ~ 1 | Author_Year), 
+  sigma2 = c(NA, 0))
+
+m_both_null <- rma.mv( 
+  yi = z,
+  V = variance_z,
+  data = Maladaptive_data,
+  random = list(~ 1 | effect_id, ~ 1 | Author_Year), sigma2 = c(0, 0)) 
+
+aov_within <- anova(m.gen, m_within_null) 
+aov_between <- anova(m.gen, m_between_null) 
+aov_bothnull <- anova(m.gen, m_both_null) 
+
+# Join these results in a table
+aov_table <- rbind(
+c(df=aov_between$p.f, aov_between$fit.stats.f[c(3:4, 1)], LRT = NA, p = NA),
+c(df=aov_within$p.r, aov_within$fit.stats.r[c(3:4, 1)], LRT = aov_within$LRT, p = aov_within$pval),
+c(df=aov_between$p.r, aov_between$fit.stats.r[c(3:4, 1)], LRT = aov_between$LRT, p = aov_between$pval),
+c(df=aov_bothnull$p.r, aov_bothnull$fit.stats.r[c(3:4, 1)], LRT = aov_bothnull$LRT, p = aov_bothnull$pval)
+)
+rownames(aov_table) <- c("Three-level model", "Within-studies variance constrained", "Between-studies variance constrained", "Both variance components constrained")
+as.tibble(aov_table) %>%
+  mutate(
+    model_label = recode(
+      as.character(row.names(.)),
+      `1` = "Three-level model",
+      `2` = "Within-studies variance constrained",
+      `3` = "Between-studies variance constrained",
+      `4` = "Both variance components constrained"
+    )
+  ) %>% gt(rowname_col = "model_label"
+  ) %>%
+  cols_label(
+    AIC = "AIC",
+    BIC = "BIC",
+    ll  = "Log-likelihood",
+    LRT = "LRT",
+    p   = "p-value"
+  )
+```
+
+```{r, echo = FALSE}
+
+# Write up stats 
+conf <- predict(m.gen)
+# conf$ci.lb
+# conf$ci.ub
+M_perf <- model_performance(m.gen)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+stats <- broom::tidy(m.gen, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+model_stats <- broom::glance(m.gen)
+
+i2 <- var.comp(m.gen)
+
+summary(i2)
+results_i2 <- i2$results
+total_i2 <- i2$totalI2
+#~#plot(i2)
+conf_int(m.gen,
+         vcov = "CR2")
+coef_test(m.gen,
+         vcov = "CR2")
+```
+
+A multilevel meta-analysis was conducted to examix the association between maladaptive strategies and anxiety severity. Data were drawn from `r Maladaptive_data %>% group_by(Study, level_of_sport) %>% summarise() %>% nrow()` samples (`r nrow(Maladaptive_data)` effect sizes, `r Maladaptive_data %>% group_by(Study) %>% summarise() %>% nrow()` individual studies) and a total of `r sum(Maladaptive_data$n)` participants. The pooled effect size indicated a moderate, positive and statistically significant association between maladaptive coping and anxiety *r* = `r round(stats$Pearson_R,2)`, (95% CI \[`r round(conf$ci.lb,2)`, `r round(conf$ci.ub,2)`\]), $p$ = `r round(stats$p.value, 3)`, $k$ = `r model_stats$nobs`, $n$ = `r sum(Maladaptive_data$n)`. This moderate pooled effect for the association between maladaptive coping and anxiety severity rejected the null hypothesis. . $I^2$ was `r round( total_i2, 2)` with an estimated variance components $tau^2$level 3 = `r results_i2[3,2]`, $tau^2$level 2 = `r results_i2[2,2]`, meaning that $I^2$Level 3 = `r round(results_i2[3,1],2)`% of the total variation could be attributed to between cluster, and $I^2$Level 2 = `r round(results_i2[2,1],2)`% to within cluster heterogeneity. Significant heterogeneity was detected by the Q statistic ($Q$ = `r round(M_perf$CochransQ,3)`, $p$ \< .`r round(M_perf$p_CochransQ,3)`01).
+
+#### Plots
+
+```{r, plots ,warning=FALSE, message=FALSE}
+#pdf(file='forestplot_test.pdf') 
+# meta::forest(m.gen, 
+#            #  sortvar = TE,
+#              addpred=TRUE,
+#              addcred = TRUE,
+#              showweights=TRUE, 
+#              header="ID", 
+#              prediction = TRUE, 
+#              print.tau2 = TRUE,
+#          #     alim=c(-1,6),
+#          # #    xlim=c(-8,7),
+#          #     ylim =c(118,0), 
+#              fontsize = .5,
+#            # slab = paste(dat$Author_Year, ", n=", dat$n), # study labels
+#              ilab = Maladaptive_data$n,
+#              leftlabs = c("Author_Year", "z", "SE"),
+#              layout = "RevMan5")
+#addpoly(m.gen, row = -1, cex = 0.8)
+#dev.off()
+
+
+# dat <- escalc(measure="ZCOR", yi=mod_z, vi=variance_z, 
+#               data=Maladaptive_data, slab=paste(Author_Year, effect_id))
+# dat
+# V <- vcalc(variance_z, cluster=Author_Year, obs=effect_id, data=Maladaptive_data, rho=0.8)
+# res <- rma(yi,vi,data=dat)
+# res
+# agg <- aggregate(dat, cluster=Author_Year, V=vcov(res, type="obs"), addk=TRUE)
+# agg
+# res <- rma(yi, vi, method="REML", data=agg, digits=3, slab=Author_Year)
+# res
+
+
+
+#forest plot
+# forest(res, mlab="Pooled Estimate", addpred=TRUE, header="Sample", 
+#      #  studylab="sample",
+#        ilab=ki, ilab.xpos=-2.7, cex=.89, order="obs", 
+#        xlim=c(-8,6), at=seq(-0.5,1.5,by=0.5), showweights=TRUE)
+# text(-2.7, res$k+2, "Number of Estimates", cex=.89, font=1.5)  
+# text(2.7, res$k+2, "Weight", cex=.89, font=1.5)  
+
+funnel(m.gen,
+       level = c(90, 95, 99),
+       shade=c("white", "gray55", "gray75"), 
+       xlab= "Fischer's z",
+       label=FALSE,
+      # digits=c(0, 1),
+       refline = stats$estimate, 
+       #main="Contour-Enhanced Funnel Plot", 
+      # legend = ("topleft")
+       )
+legend("topleft",
+       legend = c(".00 < p ≤ .01" ,".01 < p ≤ .05", ".05 < p ≤ .10", ".10 < p ≤ 1.00"),
+       fill   = c( "#CCCCCC", "gray75", "gray55", "white"),
+       bty    = "y")
+
+```
+
+#### Detection of Influential Cases and Outliers
+
+```{r}
+outlier_detection <- Maladaptive_data %>% mutate(
+  Upper_z_ci = (z + 1.96 * sqrt(variance_z)),
+  Lower_z_ci = (z - 1.96 * sqrt(variance_z)),
+  Outlier = as.factor(case_when(
+    Upper_z_ci < conf$ci.lb | Lower_z_ci > conf$ci.ub ~ "outlier",
+    Upper_z_ci > conf$ci.lb | Lower_z_ci < conf$ci.ub ~ "non outlier",
+  )
+)) 
+summary(outlier_detection$Outlier)
+
+table <- outlier_detection %>% 
+  filter(Outlier == "outlier") %>% 
+  select(
+    Author_Year, Study_sample_type, Study_Quality,
+    Var_1_summarised,`Var 2`, r, z,# variance_z,
+   # Lower_z_ci,Upper_z_ci
+    ) %>% 
+  mutate( Pooled_effect = conf$pred, Pooled_lb_ci = conf$ci.lb, Pooled_ub_ci = conf$ci.ub) %>% #group_by(Author_Year) %>%
+  arrange(desc(z), by_group = TRUE)%>% 
+  rename(
+  "Study" = "Author_Year" ,
+  "Sample" = "Study_sample_type",
+  "Study Quality" = "Study_Quality",
+  "Anxiety evaluated" = "Var_1_summarised",
+  "Coping Strategy" = "Var 2",
+  "Study effect (Pearson's r)" =  "r",
+  "Study effect (Fischer's z)" = "z",
+  "Pooled effect (z)" = "Pooled_effect",
+  "Pooled effect (95% CI lower bound)" = "Pooled_lb_ci",
+  "Pooled effect (95% CI upper bound)" = "Pooled_ub_ci"
+  ) 
+  #ungroup() %>%
+ 
+
+table %>%  gt() %>% fmt_number(decimals = 3) %>%
+  tab_stubhead(label = "Study") %>%
+tab_options(row_group.as_column = T) 
+
+#influence(m.gen)
+
+ggplot(outlier_detection,
+       aes(x = z, colour = Outlier, fill = Outlier)) +
+  # Add a histogram with transparent bars (alpha = .2)
+  geom_histogram(alpha = .2) +
+  # Add a vertical line at the pooled effect value (m_re$b[1])
+  geom_vline(xintercept = stats$estimate) +
+  labs( x= "Fischer's Z") +
+  # Apply a black and white theme
+  theme_bw() #+ facet_wrap(~Risk_of_Bias)
+
+```
+
+```{r ,message=FALSE , warning = FALSE}
+sensitivity_data <- outlier_detection %>%
+  filter(Outlier != "outlier")
+
+test <- outlier_detection %>% 
+  filter(z < .8)
+
+sens_m.gen <- rma.mv(
+  yi = z,
+  V = variance_z,
+  data = sensitivity_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+sens_m.gen
+
+
+# meta::forest(sens_m.gen, 
+#            #  sortvar = TE,
+#              addpred=TRUE,
+#              addcred = TRUE,
+#              showweights=FALSE, 
+#              header="ID", 
+#              prediction = TRUE, 
+#              print.tau2 = TRUE,
+#          #     alim=c(-1,6),
+#          # #    xlim=c(-8,7),
+#          #     ylim =c(118,0), 
+#              fontsize = .5,
+#            # slab = paste(dat$Author_Year, ", n=", dat$n), # study labels
+#              ilab = sensitivity_data$n,
+#              leftlabs = c("Author_Year", "z", "SE"),
+#              layout = "RevMan5")
+
+
+## Write up stats
+
+#dmetar::variance_decomposition(sens_m.gen)
+conf <- predict(sens_m.gen)
+# conf$ci.lb
+# conf$ci.ub
+M_perf <- model_performance(sens_m.gen)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(sens_m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+sens_stats <- broom::tidy(sens_m.gen, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+sens_model_stats <- broom::glance(sens_m.gen)
+
+i2 <- var.comp(sens_m.gen)
+summary(i2)
+results_i2 <- i2$results
+total_i2 <- i2$totalI2
+#plot(i2)
+# conf_int(m.gen,
+#          vcov = "CR2")
+# coef_test(m.gen,
+#          vcov = "CR2")
+table
+```
+
+Outlier and diagnostics were performed as significant heterogeneity was present. The Fischer's Z of `r nrow(Maladaptive_data) - nrow(sensitivity_data)` studies were outside the 95% CI range of the pooled effect. Details of these studies are presented in table ... . The association between Limited access to Emotion Regulation Strategies and Anxiety ($r$ = .75) by Hut et al.,(2023) recorded the most influential positive association, whilst the association between *Lack of Emotional Clarity* and *Somatic Anxiety* ($r$ = -.15) by Minkler et al., (2021) recorded the most influential negative association. Visual inspection in figure ... shows the identified outliers are distributed evenly, suggesting no clear indication of bias.
+
+A sensitivity analysis was conducted with the removal of outlying effects to determine if they were influential. This revealed a similar overall effect size that was also not significant (*r* = `r round(sens_stats$Pearson_R,2)`, (95% CI \[`r round(sens_stats$Pearson_low,2)`, `r round(sens_stats$Pearson_high,2)`\]), $p$ = `r round(sens_stats$p.value, 3)`), which was comparable to the original analysis (*r* = `r round(stats$Pearson_R,2)`, (95% CI \[`r round(stats$Pearson_low,2)`, `r round(stats$Pearson_high,2)`\]), $p$ = `r round(stats$p.value, 3)`). As the sensitivity analysis suggests that removing the outliers had almost no effect on the whole whole analysis, it suggests the outliers had negligible bias on the pooled effect. The original analysis was retained for the remainder of the analyses.
+
+#### Publication Bias
+
+```{r}
+funnel(m.gen,
+       level = c(90, 95, 99),
+       shade=c("white", "gray55", "gray75"), 
+       xlab= "Fischer's z",
+       label=FALSE,
+      # digits=c(0, 1),
+       refline = stats$estimate, 
+       main="Contour-Enhanced Funnel Plot", 
+      # legend = ("topleft")
+       )
+legend("topleft",
+       legend = c(".00 < p ≤ .01" ,".01 < p ≤ .05", ".05 < p ≤ .10", ".10 < p ≤ 1.00"),
+       fill   = c( "#CCCCCC", "gray75", "gray55", "white"),
+       bty    = "y")
+
+
+# Method for Egger from here : https://stat.ethz.ch/pipermail/r-sig-meta-analysis/2020-December/002471.html#:~:text=Say%20that%20data%20includes%20a%20variable%20called%20sei,paper%2C%20and%20example%20code%20in%20our%20supplementary%20materials.  and discussed in this paper https://osf.io/vqp8u_v1
+## SE_z (1 / sqrt(n-3)) or variance_z (1 /(n-3))
+# set model with SE_z set as moderator and variance for V.
+egger_test_model <- m.gen <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ SE_z, #
+  data = Maladaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+ # test = "t",
+ # method = "REML"
+) 
+
+# Then apply cluster-robust standard errors for the RVE-based test:
+eggers_results <- coef_test(egger_test_model, vcov = "CR2")  
+  
+# regtest(m.gen)
+# trimfill(egger_test_model)
+```
+
+For adaptive coping strategies, indications of publication bias could be found. Visual inspection of the funnel plot in figure ... suggested a symmetrical distribution. Egger's regression test was adapted to the multilevel context using robust variance estimation (RVE) (Rodgers & Pustejovsky, 2021). Results of the adapted Egger's regression test was not significant, suggesting asymmetry was not influential ($z$ = `r round(eggers_results[1,2],2)`, $SE$ = `r round(eggers_results[1,3],2)` , $p$ = `r round(eggers_results[1,7],2)`).
+
+#### Moderator Analyses
+
+```{r MAL_female_perc_mod}
+Maladaptive_data <- anxiety_data %>% filter(
+  Adp_mal_classification== "Maladaptive",
+ # id != 150, # bois paper outlier - removing takes estimate to .1339, p =.1149
+ #  Var_2_type != "composite score" # sensitivity analysis - Q reduces from 57.02 to 40.76, and I2 goes from 18.2% to 16.2%, amd estimate magnitude increases from -.07 to -.123 (but still not sig)
+  ) %>%
+  mutate(percentage_female_imp = replace_na(percentage_female, 0),
+         Risk_of_Bias2 = as.factor(case_when(
+           Risk_of_Bias == "Low Risk" ~ "Low Risk",
+           Risk_of_Bias == "Medium Risk" ~ "High Risk",
+           Risk_of_Bias == "High Risk" ~ "High Risk",
+         )),
+     #    gender_missing = bind_shadow(percentage_female),
+     ,
+          `Var 2 Alpha` = as.numeric(`Var 2 Alpha`),
+        coping_Measure = `emotion regulation_or_coping measure used`
+         ) %>% bind_shadow()
+
+
+# Gender moderator
+
+gender_raw <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ percentage_female,
+#  mods = ~  `Var 2 Alpha`,
+#  dfs="contain",
+#  mods = ~ -1 + Risk_of_Bias + Coping_classification  ,
+# mods = ~ -1 + Var_1_summarised  ,
+#  mods = ~ -1 + Risk_of_Bias + `Mean Age`,
+#  mods = ~  + Coping_classification  * Risk_of_Bias ,
+  data = Maladaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+gender_raw_conf <- predict(gender_raw)
+# conf$ci.lb
+# conf$ci.ub
+gender_raw_M_perf <- model_performance(gender_raw)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+gender_raw_stats <- broom::tidy(gender_raw, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+gender_raw_model_stats <- broom::glance(gender_raw)
+
+
+# generating table stats
+k <- gender_raw_model_stats$nobs
+n <- Maladaptive_data %>% select(z, variance_z, percentage_female, `Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+studies_effects <- Maladaptive_data %>% select( Study,
+  z, variance_z, percentage_female, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+QM <- gender_raw_model_stats$cochran.qm
+`QM p` <- gender_raw_model_stats$p.value.cochran.qm
+b1 <- gender_raw_stats[2,] %>% select(Pearson_R)
+z <- gender_raw_stats[2,] %>% select(estimate)
+`estimate p` <- gender_raw_stats[2,] %>% select(p.value)
+ Percentage_Female <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+                                                                              estimate_p= `estimate p`)
+`Percentage Female` <- cbind(n_studies,k, n, QM, `QM p`, b1, z, `estimate p`)
+```
+
+```{r MAL_gender_present_mod}
+# gender_missing <- rma.mv(
+#   yi = z,
+#   V = variance_z,
+#   mods = ~ -1+ percentage_female_NA,
+# #  dfs="contain",
+# #  mods = ~ -1 + Risk_of_Bias + Coping_classification  ,
+# # mods = ~ -1 + Var_1_summarised  ,
+# #  mods = ~ -1 + Risk_of_Bias + `Mean Age`,
+# #  mods = ~  + Coping_classification  * Risk_of_Bias ,
+#   data = Maladaptive_data,
+#   random = ~ 1 | Author_Year/effect_id,
+#   test = "t",
+#   method = "REML"
+# ) 
+# 
+# gender_missing_conf <- predict(gender_missing)
+# # conf$ci.lb
+# # conf$ci.ub
+# gender_missing_M_perf <- model_performance(gender_missing)
+# # Compute robust CHE results for rho
+# # CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# # CHEresultrobust
+# 
+# gender_missing_stats <- broom::tidy(gender_missing, conf.int = TRUE) %>% 
+#   mutate(
+#          Pearson_R = convert_z2r(estimate),
+#          Pearson_low = convert_z2r(conf.low),
+#          Pearson_high = convert_z2r(conf.high)
+#          )
+# gender_missing_model_stats <- broom::glance(gender_missing)
+# 
+# 
+# # generating table stats
+# k <- gender_missing_model_stats$nobs
+# n <- Adaptive_data %>% select(z, variance_z, percentage_female_NA,`Sample Size of Correlation Analysis`) %>% na.omit() 
+# n <- sum(n$`Sample Size of Correlation Analysis`)
+# 
+# studies_effects <- Adaptive_data %>% select( Study,
+#   z, variance_z, percentage_female_NA, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+# n_studies <- nrow(studies_effects)
+# 
+# QM <- gender_missing_model_stats$cochran.qm
+# `QM p` <- gender_missing_model_stats$p.value.cochran.qm
+# b1 <- gender_missing_stats[2,] %>% select(Pearson_R)
+# z <- gender_missing_stats[2,] %>% select(estimate)
+# `estimate p` <- gender_missing_stats[2,] %>% select(p.value)
+#  Gender_data <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+#                                                                               estimate_p= `estimate p`)
+# `Gender data` <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`)
+
+
+```
+
+```{r MAL_coping_measure_mod}
+
+Maladaptive_data <- Maladaptive_data %>%
+  mutate(coping_Measure_tidy_athlete_focus = as.factor(case_when(
+    coping_Measure_tidy == "Brief COPE" ~ "Brief COPE",
+    coping_Measure_tidy == "Difficulties in Emotion Regulation Scale-Short Form" ~ "Difficulties in Emotion Regulation Scale-Short Form",
+    coping_Measure_tidy == "Inventory for Stressful Situations (CISS)" ~ "Inventory for Stressful Situations (CISS)",
+    coping_Measure_tidy == "COPE, MCOPE, Test of performance strategies (TOPS)" ~ "Athlete specific measure",
+    coping_Measure_tidy == "Test of Performance Strategies" ~ "Athlete specific measure"
+  )),
+    coping_Measure_tidy_athlete_focus = relevel(coping_Measure_tidy_athlete_focus,
+                                                ref = "Athlete specific measure")
+  )
+
+  coping_measure <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ -1 + coping_Measure_tidy_athlete_focus,
+#  dfs="contain",
+#  mods = ~ -1 + Risk_of_Bias + Coping_classification  ,
+# mods = ~ -1 + Var_1_summarised  ,
+#  mods = ~ -1 + Risk_of_Bias + `Mean Age`,
+#  mods = ~  + Coping_classification  * Risk_of_Bias ,
+  data = Maladaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+coping_measure_conf <- predict(coping_measure)
+# conf$ci.lb
+# conf$ci.ub
+coping_measure_M_perf <- model_performance(coping_measure)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+coping_measure_stats <- broom::tidy(coping_measure, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+coping_measure_model_stats <- broom::glance(coping_measure)
+
+
+# generating table stats
+k <- coping_measure_model_stats$nobs
+n <- Maladaptive_data %>% select(z, variance_z, coping_Measure_tidy,`Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+studies_effects <- Maladaptive_data %>% select( Study,
+  z, variance_z, coping_Measure_tidy, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+
+QM <- coping_measure_model_stats$cochran.qm
+`QM p` <- coping_measure_model_stats$p.value.cochran.qm
+b1 <- coping_measure_stats[2,] %>% select(Pearson_R)
+z <- coping_measure_stats[2,] %>% select(estimate)
+`estimate p` <- coping_measure_stats[2,] %>% select(p.value)
+ coping_measure_data <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+                                                                              estimate_p= `estimate p`)
+`Coping Measure` <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`)
+
+
+```
+
+```{r MAL_pairwise_coping_measure_comparison}
+  pair_coping_measure <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ 1 + coping_Measure_tidy_athlete_focus,
+#  mods = ~ -1 + Region ,
+  data = Maladaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+pair_coping_measure_conf <- predict(pair_coping_measure)
+# conf$ci.lb
+# conf$ci.ub
+#coping_measure_M_perf <- model_performance(coping_measure)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+pair_coping_measure_stats <- broom::tidy(pair_coping_measure, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+
+```
+
+```{r MAL_coping_classification_mod}
+
+#testing helmert coding, so that each level is contrasted against its next consecutive one
+# Maladaptive_data$Coping_classification_helmert <- contrastable::set_contrasts(Maladaptive_data$Coping_classification ~ scaled_sum_code(n=3))
+# Coping_classification_effect <- as.factor(Maladaptive_data$Coping_classification)
+# contrasts(Maladaptive_data$Coping_classification_effect)<- contr.sum(levels(Maladaptive_data$Coping_classification_effect))
+Maladaptive_data$Coping_classification_emot_ref <- relevel(
+  Maladaptive_data$Coping_classification,
+  ref = "Emotion Focused Coping"  
+)
+  
+coping_classification <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ -1+ Coping_classification_emot_ref, # not changed write up yet to accomodate change
+# mods = ~ -1 + Var_1_summarised  ,
+#  mods = ~ -1 + Risk_of_Bias + `Mean Age`,
+#  mods = ~  + Coping_classification  * Risk_of_Bias ,
+  data = Maladaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+coping_classification_conf <- predict(coping_classification)
+# conf$ci.lb
+# conf$ci.ub
+coping_classification_M_perf <- model_performance(coping_classification)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+coping_classification_stats <- broom::tidy(coping_classification, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+coping_classification_model_stats <- broom::glance(coping_classification)
+
+
+# generating table stats
+k <- coping_classification_model_stats$nobs
+n <- Maladaptive_data %>% select(z, variance_z, coping_Measure_tidy,`Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+studies_effects <- Maladaptive_data %>% select( Study,
+  z, variance_z, Coping_classification, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+
+QM <- coping_classification_model_stats$cochran.qm
+`QM p` <- coping_classification_model_stats$p.value.cochran.qm
+b1 <- coping_classification_stats[2,] %>% select(Pearson_R)
+z <- coping_classification_stats[2,] %>% select(estimate)
+`estimate p` <- coping_classification_stats[2,] %>% select(p.value)
+ coping_classification_data <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,                                                                           estimate_p= `estimate p`)
+ 
+`Coping Classification` <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`)
+
+
+```
+
+```{r MAL_pairwise_coping_classification_comparison}
+  pair_coping_measure <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ 1 + Coping_classification_emot_ref,
+#  mods = ~ -1 + Region ,
+  data = Maladaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+pair_Coping_classification_conf <- predict(pair_coping_measure)
+# conf$ci.lb
+# conf$ci.ub
+#coping_measure_M_perf <- model_performance(coping_measure)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+pair_Coping_classification_stats <- broom::tidy(pair_coping_measure, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+
+```
+
+```{r, MAL_mean_age_mod}
+Mean_Age <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ `Mean Age`,
+  data = Maladaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+
+Mean_Age_conf <- predict(Mean_Age)
+# conf$ci.lb
+# conf$ci.ub
+Mean_Age_M_perf <- model_performance(Mean_Age)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+Mean_Age_stats <- broom::tidy(Mean_Age, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+Mean_Age_model_stats <- broom::glance(Mean_Age)
+
+
+# generating table stats
+k <- Mean_Age_model_stats$nobs
+n <- Maladaptive_data %>% select(z, variance_z, `Mean Age`,`Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+
+studies_effects <- Maladaptive_data %>% select( Study,
+  z, variance_z, `Mean Age`, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+QM <- Mean_Age_model_stats$cochran.qm
+`QM p` <- Mean_Age_model_stats$p.value.cochran.qm
+b1 <- Mean_Age_stats[2,] %>% select(Pearson_R)
+z <- Mean_Age_stats[2,] %>% select(estimate)
+`estimate p` <- Mean_Age_stats[2,] %>% select(p.value)
+ Mean_Age_data <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+                                                                              estimate_p= `estimate p`)
+`Mean Age` <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`)
+
+```
+
+```{r Mal_alpha_mod}
+alpha <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~`Var 2 Alpha`,
+#  dfs="contain",
+#  mods = ~ -1 + Risk_of_Bias + Coping_classification  ,
+# mods = ~ -1 + Var_1_summarised  ,
+#  mods = ~ -1 + Risk_of_Bias + `Mean Age`,
+#  mods = ~  + Coping_classification  * Risk_of_Bias ,
+  data = Maladaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+alpha_conf <- predict(alpha)
+# conf$ci.lb
+# conf$ci.ub
+alpha_M_perf <- model_performance(alpha)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+alpha_stats <- broom::tidy( alpha, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+alpha_model_stats <- broom::glance( alpha)
+
+
+# generating table stats
+k <- alpha_model_stats$nobs
+n <- Maladaptive_data %>% select(z, variance_z, `Var 2 Alpha`,`Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+
+studies_effects <- Maladaptive_data %>% select( Study,
+  z, variance_z, `Var 2 Alpha`, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+
+QM <- alpha_model_stats$cochran.qm
+`QM p` <- alpha_model_stats$p.value.cochran.qm
+b1 <- alpha_stats[2,] %>% select(Pearson_R)
+z <- alpha_stats[2,] %>% select(estimate)
+`estimate p` <- alpha_stats[2,] %>% select(p.value)
+ alpha_data <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+                                                                              estimate_p= `estimate p`)
+`Alpha data` <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`)
+
+
+```
+
+```{r MAL_alpha_NA_mod}
+alpha_NA <- rma.mv(
+  yi = z,
+  V = variance_z,
+  mods = ~ +1 +`Var 2 Alpha_NA`,
+#  dfs="contain",
+#  mods = ~ -1 + Risk_of_Bias + Coping_classification  ,
+# mods = ~ -1 + Var_1_summarised  ,
+#  mods = ~ -1 + Risk_of_Bias + `Mean Age`,
+#  mods = ~  + Coping_classification  * Risk_of_Bias ,
+  data = Maladaptive_data,
+  random = ~ 1 | Author_Year/effect_id,
+  test = "t",
+  method = "REML"
+) 
+
+alpha_NA_conf <- predict(alpha_NA)
+# conf$ci.lb
+# conf$ci.ub
+alpha_NA_M_perf <- model_performance(alpha_NA)
+# Compute robust CHE results for rho
+# CHEresultrobust <- robust(m.gen, cluster = Study_id, clubSandwich = TRUE, digits = 3)
+# CHEresultrobust
+
+alpha_NA_stats <- broom::tidy( alpha_NA, conf.int = TRUE) %>% 
+  mutate(
+         Pearson_R = convert_z2r(estimate),
+         Pearson_low = convert_z2r(conf.low),
+         Pearson_high = convert_z2r(conf.high)
+         )
+alpha_NA_model_stats <- broom::glance( alpha_NA)
+
+
+# generating table stats
+k <- alpha_NA_model_stats$nobs
+n <- Maladaptive_data %>% select(z, variance_z, `Var 2 Alpha_NA`,`Sample Size of Correlation Analysis`) %>% na.omit() 
+n <- sum(n$`Sample Size of Correlation Analysis`)
+
+studies_effects <- Maladaptive_data %>% select( Study,
+  z, variance_z, `Var 2 Alpha_NA`, `Sample Size of Correlation Analysis`) %>% na.omit()%>% group_by(Study) %>% summarise(n_effects = n())
+n_studies <- nrow(studies_effects)
+
+QM <- alpha_NA_model_stats$cochran.qm
+`QM p` <- alpha_NA_model_stats$p.value.cochran.qm
+b1 <- alpha_NA_stats[2,] %>% select(Pearson_R)
+z <- alpha_NA_stats[2,] %>% select(estimate)
+`estimate p` <- alpha_NA_stats[2,] %>% select(p.value)
+ alpha_NA_data <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`) %>% mutate(QM_p = `QM p`,
+                                                                              estimate_p= `estimate p`)
+`Alpha NA data` <- cbind(n_studies, k, n, QM, `QM p`, b1, z, `estimate p`)
+
+
+```
+
+```{r}
+# anova(
+#   m.gen1, 
+# #  m.gen2, 
+#    m.gen3,
+#  #  m.gen4,
+# #  m.gen5,
+#   refit = TRUE
+# )
+```
+
+The study characteristics of percentage of female participants, mean participant age, coping classification and coping measure were examined in moderator analyses to asses their potential impact on the association between maladaptive coping strategies and anxiety severity.
+
+Female athletes are identified has having significantly higher levels of anxiety in comparison to their male athletes (source), and so the percentage of female participants was investigated as a potential moderator. For the maladaptive strategies, all studies reported data on gender. Moderator analysis showed that the percentage of female participants had no significant effect on the association between adaptive coping and anxiety (k = `r Percentage_Female$k`, n = `r Percentage_Female$n`, $QM$ = `r round(Percentage_Female$QM,2)`, $p$ = `r round(Percentage_Female$QM_p,3)`). The pooled moderating effect size of Percentage of female participants was negligible and not significant ($r$ = `r round(Percentage_Female$Pearson_R,2)`, 95% CI\[`r round(gender_raw_stats[2,10],3)`, `r round(gender_raw_stats[2,11],3)`\]).
+
+As previous meta analyses have identified mean age of participants to be a significant moderator between coping and mental health outcomes in non-athletic populations (source), it was explored as a potential moderator in elite athletes. Moderator analysis demonstrated mean age of participants was not a significant moderator (k = `r Mean_Age_data$k`, n = `r Mean_Age_data$n`, $QM$ = `r round(Mean_Age_data$QM,3)`, $p$ = `r round(Mean_Age_data$QM_p,3)`). The pooled moderating effect size of mean participant age was negligible and not significant ($r$ = `r round(Mean_Age_stats[2,9], 3)`, 95% CI\[`r round(Mean_Age_stats[2,10], 3)`,`r round(Mean_Age_stats[2,11], 3)`\]).
+
+Coping classification moderated the association between coping and anxiety levels in elite athletes (k = `r coping_classification_data$k`, n = `r coping_classification_data$n`, $QM$ = `r round(coping_classification_data$QM,2)`, $p$ \< .`r round(coping_classification_data$QM_p,3)`01). All classifications of maladaptive coping significantly associated with anxiety. Problem focused coping had the strongest pooled effect ($r$ = `r round(coping_classification_stats[4,9],3)`, 95% CI\[`r round(coping_classification_stats[4,10],3)`, `r round(coping_classification_stats[4,11],3)`\]), followed by combined coping ($r$ = `r round(coping_classification_stats[3,9],3)`, 95% CI\[`r round(coping_classification_stats[3,10],3)`, `r round(coping_classification_stats[3,11],3)`\]), emotion focused coping ($r$ = `r round(coping_classification_stats[1,9],3)`, 95% CI\[`r round(coping_classification_stats[1,10],3)`, `r round(coping_classification_stats[1,11],3)`\]), and avoidance focused coping ($r$ = `r round(coping_classification_stats[2,9],3)`, 95% CI\[`r round(coping_classification_stats[2,10],3)`, `r round(coping_classification_stats[2,11],3)`\]) all had significant positive pooled effect sizes. Posthoc pairwise comparisons found no significant differences between maladaptive emotion focused coping and other forms of maladaptive coping ($p$ \> .05). Despite emotion focused coping having a significant association with anxiety, the results failed to reject the null hypothesis for maladaptive emotion focused coping having the strongest association with anxiety in elite athletes. This suggests that increased use of any maladaptive strategy attributed to these domains should be recognised as anxiety risk factors in elite athletes.
+
+Due to the limited number of studies using athlete specific maladaptive measures of coping (n = 2), the decision was made to cluster the COPE/MCOPE/TOPS hybrid used by Hets... & Chroni, (????) with the TOPS in the moderator analysis on the effect of coping measure on the association between maladaptive coping and anxiety. The influence of coping measures significantly moderated the association between maladaptive coping and anxiety levels in elite athletes (k = `r coping_measure_data$k`, n = `r coping_measure_data$n`, $QM$ = `r round(coping_measure_data$QM,2)`, $p$ \< .`r round(coping_measure_data$QM_p,3)`01).Studies using the Difficulties in Emotion Regulation scale reported the strongest significant positive pooled effect size ($r$ = `r round(coping_measure_stats[3,9],3)`, 95% CI\[`r round(coping_measure_stats[3,10],3)`, `r round(coping_measure_stats[3,11],3)`\]). This was followed by studies using Brief Cope ($r$ = `r round(coping_measure_stats[2,9],3)`, 95% CI\[`r round(coping_measure_stats[2,10],3)`, `r round(coping_measure_stats[2,11],3)`\]) and studies using the TOPS or COPE/COPE/TOPS hybrid ($r$ = `r round(coping_measure_stats[1,9],3)`, 95% CI\[`r round(coping_measure_stats[1,10],3)`, `r round(coping_measure_stats[1,11],3)`\]). Studies evaluating maladaptive coping using the CISS did record a significant association with anxiety ($r$ = `r round(coping_measure_stats[4,9],3)`, 95% CI\[`r round(coping_measure_stats[4,10],3)`, `r round(coping_measure_stats[4,11],3)`\]). Post-hoc pairwise comparison meanwhile found no significant differences between the athlete specific measures and other measures ($p$ \> .05). This suggests studies using the Brief coping scale, the Difficulties in Emotion Regulation Scale, and athlete specific measures are more likely to demonstrate the use of their respective coping strategies as an anxiety risk factor, with little difference between them. The remaining measures had no significant pooled effect on the association between coping and anxiety, and their full details can be found in table ... .
+
+Measurement reliability evaluated by Cronbach's Alpha was investigated as a moderator. Measurment reliability had a significant effect on the association between Maladaptive coping and anxiety (k = `r alpha_data$k`, n = `r alpha_data$n`, $QM$ = `r round(alpha_data$QM,2)`, $p$ \< .`r round(alpha_data$QM_p,3)`)01. The pooled moderating effect size of measurement reliability had a large positive significant effect ($r$ = `r round(alpha_stats$Pearson_R[2],2)`, 95% CI\[`r round(alpha_stats[2,10],3)`, `r round(alpha_stats[2,11],3)`\]). This suggests that studies using more reliable measures were more likely to record stronger positive associations between maladaptive coping strategies and anxiety severity. In the maladaptive strategies,only 7 effects associated within 1 study had not reported Cronbach's Alpha for their sample. Due to the limited number of missing values, the decision was made not to report the sensitivity analysis of the missing Cronbach's Alpha data of the maladaptive strategies.
+
+```{r}
+grand_moderator_table <- rbind(`Percentage Female`, #`Gender data`, 
+                               `Mean Age` ,`Coping Classification`, `Coping Measure`, `Alpha data`)
+
+grand_moderator_table %>% mutate(label_ID = row_number(),
+                                 label = case_when(
+                                   label_ID == "1"  ~ "Percentage Female",
+                                #   label_ID == "2"  ~"Gender data present/missing", 
+                                   label_ID == "2"  ~"Mean Age",
+                                   label_ID == "3"  ~"Coping Classification",
+                                   label_ID == "4"  ~"Coping Measure",
+                                   label_ID == "5"  ~ "Coping Measure Reliability"
+                                 )
+                                 ) %>%
+  select(label, n_studies, k, n, QM, `QM p`) %>%
+  gt() %>% fmt_number(decimals = 4) %>% 
+  tab_header(
+    title = "Moderator fit Analysis"
+  )
+
+count_data_coping_classification <- Maladaptive_data %>%
+  group_by(Coping_classification) %>%
+  summarise(
+    k = n(),
+    n = sum(n)
+            ) %>% as.data.frame() 
+
+coping_classification_stats %>% as.data.frame() %>% select(-type) %>% 
+  arrange(desc(estimate)) %>%
+  mutate(term = str_remove(term,"Coping_classification"),
+     #    n = count_data_coping_classification$n
+         ) %>%
+  left_join(
+    y = count_data_coping_classification,
+    by = join_by(term == Coping_classification),
+  ) %>%
+  select(term, k, n, estimate, Pearson_R, Pearson_low, Pearson_high, p.value) %>%
+  gt() %>% fmt_number(decimals = 4)%>% 
+  tab_header(
+    title = "Coping Classification Moderator Analysis"
+  )
+
+count_data_coping_measure <- Maladaptive_data %>%
+  group_by(coping_Measure_tidy) %>%
+  summarise(
+    k = n(),
+    n = sum(n)
+            ) %>% as.data.frame() 
+
+coping_measure_stats %>% select(-type) %>% arrange(desc(estimate)) %>%
+  mutate(term = str_remove(term,"coping_Measure_tidy")) %>%
+  left_join(
+    y = count_data_coping_measure,
+    by = join_by(term == coping_Measure_tidy),
+  ) %>%
+  select(term, k, n, estimate, Pearson_R, Pearson_low, Pearson_high, p.value) %>%
+  gt() %>% fmt_number(decimals = 4) %>% 
+  tab_header(
+    title = "Coping Measures Moderator Analysis"
+  )
+```
+
+### 3.5. Synthesis of results
+
+### 3.6. Risk of bias across studies
+
+### 3.7. Additional analysis
